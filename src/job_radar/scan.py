@@ -48,8 +48,9 @@ def run_scan(
         seen = set()
 
     http = client()
-    totals = {"found": 0, "new": 0, "dupes": 0, "filtered": 0, "errors": 0}
+    totals = {"found": 0, "new": 0, "dupes": 0, "filtered": 0, "errors": 0, "pruned": 0}
     new_jobs: list[Job] = []
+    live_sources: list[str] = []  # sources that fetched OK this run (safe to prune)
     started = datetime.now(timezone.utc)
 
     for sid, mod in REGISTRY.items():
@@ -72,6 +73,7 @@ def run_scan(
                 s.close()
             continue
 
+        live_sources.append(sid)  # fetch succeeded → its jobs are current
         found = new = dupes = filtered = 0
         store = Store(db_path) if not dry_run else None
         for job in jobs:
@@ -97,6 +99,16 @@ def run_scan(
         log(f"  ✓ {sid}: {found} found, {new} new, {dupes} dupes, {filtered} filtered")
 
     http.close()
+
+    # Prune jobs that dropped off their (successfully-scanned) source > N hours
+    # ago — closed/filled postings that would otherwise inflate the store.
+    if not dry_run and live_sources:
+        s = Store(db_path)
+        totals["pruned"] = s.prune_stale(int(cfg.get("prune_after_hours", 72)), live_sources)
+        s.close()
+        if totals["pruned"]:
+            log(f"  ⌫ pruned {totals['pruned']} stale job(s)")
+
     return {
         "started": started.isoformat(),
         "finished": datetime.now(timezone.utc).isoformat(),
@@ -130,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     bar = "━" * 45
     date = datetime.now(timezone.utc).date().isoformat()
     print(f"\n{bar}\nJob Scan — {date}\n{bar}")
-    for k in ("found", "new", "dupes", "filtered", "errors"):
+    for k in ("found", "new", "dupes", "filtered", "errors", "pruned"):
         print(f"{k.capitalize()+':':9} {t[k]}")
     if result["new_jobs"]:
         print("\nNew matches:")

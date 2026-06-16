@@ -125,6 +125,23 @@ def test_scan_409_when_already_running(client):
         srv._scan_lock.release()
 
 
+def test_webhook_dispatches_without_secret(client):
+    c, _ = client
+    # no secret configured -> accepted; unknown user dropped by the allowlist
+    r = c.post("/telegram/webhook",
+               json={"message": {"from": {"id": 1}, "chat": {"id": 1}, "text": "/jobs"}})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+def test_webhook_rejects_bad_secret(client, monkeypatch):
+    import job_radar.server as srv
+    monkeypatch.setitem(srv._WEBHOOK, "secret", "s3cr3t")
+    c, _ = client
+    r = c.post("/telegram/webhook", json={"message": {}},
+               headers={"x-telegram-bot-api-secret-token": "wrong"})
+    assert r.status_code == 403
+
+
 def test_guarded_scan_single_flight(monkeypatch, tmp_path):
     import job_radar.server as srv
 

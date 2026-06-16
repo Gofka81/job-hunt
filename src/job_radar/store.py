@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -140,6 +140,39 @@ class Store:
             )
             updated += 1
         return updated
+
+    LIST_COLS = (
+        "job_id", "source", "company", "title", "url", "location",
+        "status", "score", "first_seen", "last_seen",
+    )
+
+    def list_jobs(self, limit: int = 500) -> list[dict]:
+        """All jobs, newest-discovered first, with timestamps + status — for the
+        dashboard. `first_seen` = when a scan first found it; `last_seen` = the
+        most recent scan that still saw it (a stale value ≈ the posting is gone)."""
+        rows = self.con.execute(
+            f"""SELECT {", ".join(self.LIST_COLS)}
+                FROM jobs ORDER BY first_seen DESC LIMIT ?""",
+            [limit],
+        ).fetchall()
+        return [dict(zip(self.LIST_COLS, r)) for r in rows]
+
+    def prune_stale(self, max_age_hours: int, sources: list[str]) -> int:
+        """Delete still-`new` jobs not seen for `max_age_hours` — they've dropped
+        off their source (closed/filled) and would otherwise pile up. Guards:
+        only `status='new'` (keep evaluated/applied history) and only the given
+        `sources` (pass those that scanned OK this run, so an outage can't wipe
+        jobs). Returns rows deleted."""
+        if not sources or max_age_hours <= 0:
+            return 0
+        cutoff = _now() - timedelta(hours=max_age_hours)
+        marks = ",".join("?" * len(sources))
+        where = f"status = 'new' AND last_seen < ? AND source IN ({marks})"
+        params = [cutoff, *sources]
+        n = self.con.execute(f"SELECT count(*) FROM jobs WHERE {where}", params).fetchone()[0]
+        if n:
+            self.con.execute(f"DELETE FROM jobs WHERE {where}", params)
+        return n
 
     def funnel(self) -> dict[str, int]:
         """Counts for the dashboard funnel: total discovered + per-status."""

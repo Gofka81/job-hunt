@@ -28,6 +28,11 @@ services:
       - JOB_RADAR_API_TOKEN=${JOB_RADAR_API_TOKEN}
       - SCAN_HOURS=${SCAN_HOURS:-7-19/2}
       - TZ=${TZ:-Europe/London}
+      # Telegram (optional): notifications + interactive bot. All three = bot;
+      # just TOKEN + CHAT_ID = notifications only.
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL:-}
     volumes:
       - jobs-data:/app/data        # DuckDB + live config.yml
     ports:

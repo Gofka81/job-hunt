@@ -18,6 +18,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from . import bot, notify
 from .config import ROOT, load_config, read_config_text, save_config
 from .scan import run_scan
 from .store import Store
@@ -30,15 +31,24 @@ TOKEN_ENV = "JOB_RADAR_API_TOKEN"
 _scan_lock = threading.Lock()
 _scan_status: dict = {"running": False, "last": None}
 
+# Telegram webhook secret, set at startup if the bot is configured.
+_WEBHOOK: dict = {"secret": None}
+
 
 def _guarded_scan(db: str) -> None:
-    """Run one scan unless one is already in progress (then no-op). Used by both
-    POST /api/scan and the scheduler."""
+    """Run one scan unless one is already in progress (then no-op). Used by the
+    API trigger, the scheduler, and the /scan Telegram command. Pushes a Telegram
+    notification with the new matches when done."""
     if not _scan_lock.acquire(blocking=False):
         return
     _scan_status["running"] = True
     try:
-        _scan_status["last"] = run_scan(load_config(), db)
+        result = run_scan(load_config(), db)
+        _scan_status["last"] = result
+        try:
+            notify.notify_new_jobs(result)
+        except Exception:
+            pass  # a Telegram hiccup must not affect the scan
     except Exception as exc:  # never let a scan crash the server
         _scan_status["last"] = {"error": str(exc)}
     finally:
@@ -134,6 +144,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
         """Last scan's result + whether one is running now."""
         return {"running": _scan_status["running"], "last": _scan_status["last"]}
 
+    @app.post("/telegram/webhook")
+    def telegram_webhook(
+        update: dict = Body(...),
+        x_telegram_bot_api_secret_token: str | None = Header(default=None),
+    ) -> dict:
+        """Telegram interactive bot. Not bearer-gated (Telegram can't send it) —
+        secured by the per-startup secret header + the user-id allowlist in bot.py."""
+        if _WEBHOOK["secret"] and x_telegram_bot_api_secret_token != _WEBHOOK["secret"]:
+            raise HTTPException(403, "bad webhook secret")
+
+        def _trigger_scan() -> None:
+            threading.Thread(target=_guarded_scan, args=(db,), daemon=True).start()
+
+        bot.handle_update(update, db, scan_fn=_trigger_scan)
+        return {"ok": True}
+
     return app
 
 
@@ -155,12 +181,29 @@ def _start_scheduler(db: str) -> None:
     print(f"[scheduler] scans at hour={hours} (TZ={os.environ.get('TZ', 'local')})", flush=True)
 
 
+def _setup_telegram() -> None:
+    """Register the webhook with Telegram so interactive commands work. Generates
+    a fresh secret each startup (held in memory) — only Telegram, sending that
+    secret header, can reach the webhook. No-op unless the bot URL + token are set."""
+    import secrets
+
+    base = os.environ.get("TELEGRAM_WEBHOOK_URL")
+    if not base or not os.environ.get("TELEGRAM_BOT_TOKEN"):
+        return
+    secret = secrets.token_urlsafe(24)
+    _WEBHOOK["secret"] = secret
+    url = base.rstrip("/") + "/telegram/webhook"
+    ok = notify.set_webhook(url, secret)
+    print(f"[telegram] webhook -> {url} ({'registered' if ok else 'FAILED'})", flush=True)
+
+
 def main() -> int:
     import uvicorn
 
     db = os.environ.get("JOB_RADAR_DB") or DEFAULT_DB
     if os.environ.get("SCAN_SCHEDULER", "1") != "0":
         _start_scheduler(db)
+    _setup_telegram()
     host = os.environ.get("JOB_RADAR_HOST", "127.0.0.1")
     port = int(os.environ.get("JOB_RADAR_PORT", "8000"))
     uvicorn.run("job_radar.server:app", host=host, port=port, reload=False)

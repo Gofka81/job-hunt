@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from job_radar.schema import Job
 from job_radar.store import Store
+
+
+def _backdate(store: Store, job_id: str, hours: int) -> None:
+    old = datetime.now(timezone.utc) - timedelta(hours=hours)
+    store.con.execute("UPDATE jobs SET last_seen = ? WHERE job_id = ?", [old, job_id])
 
 
 def _store(tmp_path):
@@ -53,3 +60,44 @@ def test_mark_results_defaults_status_to_evaluated(tmp_path):
     s.upsert(job)
     s.mark_results([{"job_id": job.job_id, "score": 7.0}])
     assert s.funnel().get("evaluated") == 1
+
+
+def test_list_jobs_includes_timestamps(tmp_path):
+    s = _store(tmp_path)
+    s.upsert(_job("https://x/1"))
+    jobs = s.list_jobs()
+    assert len(jobs) == 1
+    assert set(jobs[0]) >= {"first_seen", "last_seen", "status", "score", "url"}
+
+
+def test_prune_deletes_stale_new_job(tmp_path):
+    s = _store(tmp_path)
+    job = _job("https://x/1")
+    s.upsert(job)
+    _backdate(s, job.job_id, 100)  # last seen 100h ago
+    assert s.prune_stale(72, ["reed"]) == 1
+    assert s.list_jobs() == []
+
+
+def test_prune_keeps_recent_job(tmp_path):
+    s = _store(tmp_path)
+    s.upsert(_job("https://x/1"))  # last_seen = now
+    assert s.prune_stale(72, ["reed"]) == 0
+
+
+def test_prune_keeps_evaluated_history(tmp_path):
+    s = _store(tmp_path)
+    job = _job("https://x/1")
+    s.upsert(job)
+    s.mark_results([{"job_id": job.job_id, "status": "applied"}])
+    _backdate(s, job.job_id, 100)
+    assert s.prune_stale(72, ["reed"]) == 0  # applied = history, never pruned
+
+
+def test_prune_skips_sources_not_scanned(tmp_path):
+    s = _store(tmp_path)
+    job = _job("https://x/1")  # source = reed
+    s.upsert(job)
+    _backdate(s, job.job_id, 100)
+    assert s.prune_stale(72, ["adzuna"]) == 0  # reed didn't scan OK → don't touch
+    assert s.prune_stale(72, ["reed"]) == 1
