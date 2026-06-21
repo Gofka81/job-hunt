@@ -121,8 +121,13 @@ async function api(path, opts={}) {
 }
 function showAuth(m){ $("#auth").style.display="flex"; $("#msg").textContent=m||""; }
 
-const RECENT_MS = 72*3600*1000;   // "recent" default window
+const RECENT_MS = 48*3600*1000;   // "recent" default window
 let SHOW_ALL = false;             // recency toggle (off = recent only)
+
+// One posting can list several cities (locations[], stored priority-first by the
+// server). Show the first as the preview chip + "+N" so Edinburgh is never hidden.
+function primaryLoc(j){ const l=j.locations||[]; return l[0] || j.location || "—"; }
+function locExtra(j){ const n=(j.locations||[]).length; return n>1 ? ` +${n-1}` : ""; }
 
 function fillFilter(sel, label, values) {
   const cur = sel.value;
@@ -138,7 +143,7 @@ function viewJobs() {
   const now = Date.now();
   let v = JOBS.filter(j =>
     (!st  || j.status === st) &&
-    (!loc || (j.location_cleaned || "") === loc) &&
+    (!loc || (j.locations || []).includes(loc)) &&
     (!src || j.source === src) &&
     // min salary on salary_max; keep jobs with no salary data visible
     (!minSal || j.salary_max == null || j.salary_max >= minSal) &&
@@ -146,14 +151,14 @@ function viewJobs() {
   const k = $("#sort").value;
   const by = { recent:(a,b)=> (b.first_seen||"").localeCompare(a.first_seen||""),
                company:(a,b)=> (a.company||"").localeCompare(b.company||""),
-               location:(a,b)=> (a.location_cleaned||"").localeCompare(b.location_cleaned||""),
+               location:(a,b)=> primaryLoc(a).localeCompare(primaryLoc(b)),
                score:(a,b)=> (b.score||0)-(a.score||0) };
   v.sort(by[k]);
   render(v);
   const older = SHOW_ALL ? 0 : JOBS.filter(j => j.first_seen && (now - new Date(j.first_seen).getTime()) > RECENT_MS).length;
   $("#recency").textContent = SHOW_ALL ? "All" : `Recent${older?` (+${older})`:""}`;
   $("#recency").classList.toggle("on", !SHOW_ALL);
-  $("#msg").textContent = `${v.length} of ${JOBS.length} jobs` + (SHOW_ALL ? "" : " · recent 72h");
+  $("#msg").textContent = `${v.length} of ${JOBS.length} jobs` + (SHOW_ALL ? "" : " · recent 48h");
 }
 function salaryStr(j) {
   const k = n => "£" + Math.round(n/1000) + "k";
@@ -171,7 +176,7 @@ function render(list) {
       <a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>
       <div class="meta">
         <span>${esc(j.company)}</span>
-        <span class="pill">${esc(j.location_cleaned || j.location || "—")}</span>
+        <span class="pill">${esc(primaryLoc(j))}${locExtra(j)}</span>
         ${sal ? `<span class="pill">${sal}</span>` : ''}
         <span class="pill">${esc(j.source)}</span>
         <span class="pill">${esc(j.status)}</span>
@@ -187,7 +192,7 @@ async function fetchJobs() {
   const url = "/api/jobs?limit=500" + (q ? "&q=" + encodeURIComponent(q) : "");
   JOBS = (await (await api(url)).json()).jobs || [];
   fillFilter($("#fstatus"), "All statuses", JOBS.map(j => j.status));
-  fillFilter($("#floc"), "All locations", JOBS.map(j => j.location_cleaned));
+  fillFilter($("#floc"), "All locations", JOBS.flatMap(j => j.locations || []));
   fillFilter($("#fsource"), "All sources", JOBS.map(j => j.source));
   viewJobs();
 }

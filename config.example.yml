@@ -44,11 +44,23 @@ location_filter:
   # Note: a "London (Remote)" role passes via "Remote"; pure on-site London with no
   # remote tag won't match allow unless "London" is added. Tune to taste.
 
+# --- Priority cities ---
+# Used two ways: when a raw location matches several cities the first priority hit
+# wins, and a multi-city posting shows its first priority city in the dashboard
+# preview (so a priority city is never hidden behind "+N"). Omit to use the default
+# (Edinburgh, Glasgow, London).
+priority_locations:
+  - "Edinburgh"
+  - "Glasgow"
+  - "London"
+
 # --- Lifecycle ---
 # A 'new' job not seen in a source's listing for this many hours is marked
-# 'expired' (closed/filled) and drops off the active list — it reactivates if it
-# reappears. Source-presence is the reliable signal; we don't URL-poke (aggregators
-# block bots). 24h tolerates a missed scan or two before expiring.
+# 'expired' (closed/filled) and drops off the active list. This is ALSO the dedup
+# recency window: a vacancy re-seen within it merges into its live row, while one
+# that reappears AFTER expiring gets a fresh row (a new evaluation generation).
+# Source-presence is the reliable signal; we don't URL-poke (aggregators block
+# bots). 24h tolerates a missed scan or two before expiring.
 expire_after_hours: 24
 
 # --- Sources ---

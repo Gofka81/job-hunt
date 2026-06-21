@@ -1,47 +1,62 @@
-"""Deterministic deduplication, applied at write time via the job_id.
+"""Write-time deduplication.
 
-One vacancy = one stored row. `role_key(company, title, city)` is the identity of
-a logical vacancy: normalized company + normalized title + canonical city.
-`schema.make_job_id` hashes it, so everything that resolves to the same
-role-in-the-same-city collapses onto a single primary key:
-  - Adzuna tracking-token variants of one ad (`?se=`, `?utm_*`) → same company+
-    title+city → one row.
-  - Agency reposts of a role under brand-new ad-ids → same key → one row.
-  - "London" vs "London, UK" vs "Farringdon, London" → all clean to city
-    "London" → one row.
-But the SAME title in a DIFFERENT city (e.g. London vs Edinburgh) keeps a distinct
-key → stays a separate vacancy, so a second-city opening is never silently lost.
+`vacancy_key(company, title)` = normalized company + role, source- and
+city-agnostic — so tracking-token variants, agency reposts, the same ad on
+Adzuna+Reed, and one posting listed in many cities all collapse to one live row
+(city becomes a `locations` attribute, not part of identity).
 
-Because dedup is in the id, there's no separate notification gate: a newly inserted
-row IS a new vacancy, so the scan notifies on exactly the rows it inserts.
-
-Normalizers are ported from career-ops `dedup-tracker.mjs` (normalizeCompany /
-normalizeRole) so both repos collapse the same way. We use normalized-EXACT
-matching, not career-ops's fuzzy roleMatch: prod data shows repost titles are
-byte-identical ("Senior Analytics Engineer" ×21), while fuzzy would wrongly merge
-genuinely distinct roles ("Analytics Engineer" vs "Senior Analytics Engineer").
+This is NOT the storage primary key. `job_id = sha1(vacancy_key|first_seen)`
+(schema.make_job_id) is the per-generation row id: dedup matches vacancy_key
+within a recency window, so a live sighting merges but a reappearance after expiry
+gets a fresh row. Normalizers mirror career-ops `dedup-tracker.mjs`, normalized-
+EXACT (not fuzzy) — prod reposts are byte-identical, fuzzy would wrongly merge
+"Analytics Engineer" with "Senior Analytics Engineer".
 """
 
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _COMPANY_DROP = re.compile(r"[^a-z0-9 ]")
 _ROLE_DROP = re.compile(r"[^a-z0-9 /]")
 _SPACES = re.compile(r"\s+")
 
 
+# Tracking params dropped from the STORED clickable link. Denylist (not a blanket
+# strip): some boards carry the job id in the query (`?gh_jid=`, Adzuna's signed
+# `se=`), so we only remove known noise and keep everything else — the link must
+# still resolve. Anything starting with `utm_` is dropped too.
+_TRACKING_KEYS = frozenset(
+    {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+     "gh_src", "source", "ref", "referrer"}
+)
+
+
 def canonical_url(url: str | None) -> str:
-    """Strip query string + fragment + trailing slash. Used only as the job_id
-    fallback when company/title are blank (can't build a role key) — so two
-    blank-field listings aren't wrongly merged, and token-variants of such an ad
-    still collapse."""
+    """Strip query string + fragment + trailing slash. Used only as the
+    vacancy_key fallback when company/title are blank (can't build a role key) —
+    so two blank-field listings aren't wrongly merged, and token-variants of such
+    an ad still collapse. Never used for a link the user clicks."""
     if not url:
         return ""
     s = urlsplit(url.strip())
     path = s.path.rstrip("/")
     return urlunsplit((s.scheme, s.netloc, path, "", ""))
+
+
+def clean_stored_url(url: str | None) -> str:
+    """The clickable link we persist: drop the fragment + known tracking params
+    (denylist), keep functional params so the URL still resolves. Cosmetic only —
+    dedup never compares URLs (it hashes company|role)."""
+    if not url:
+        return ""
+    s = urlsplit(url.strip())
+    kept = [
+        (k, v) for k, v in parse_qsl(s.query, keep_blank_values=True)
+        if k.lower() not in _TRACKING_KEYS and not k.lower().startswith("utm_")
+    ]
+    return urlunsplit((s.scheme, s.netloc, s.path, urlencode(kept), ""))
 
 
 def normalize_company(name: str | None) -> str:
@@ -60,11 +75,11 @@ def normalize_role(role: str | None) -> str:
     return _SPACES.sub(" ", s).strip()
 
 
-def role_key(company: str | None, title: str | None, city: str | None) -> str | None:
-    """Identity of a logical vacancy: normalized company + role + canonical city.
-    Returns None when company or title is blank — such rows have no safe role key
-    (all blanks would collapse together), so make_job_id falls back to the URL."""
+def vacancy_key(company: str | None, title: str | None) -> str | None:
+    """Identity of a logical vacancy: normalized company + role (city-agnostic).
+    Returns None when company or title is blank — such rows have no safe key (all
+    blanks would collapse together), so make_vacancy_key falls back to the URL."""
     c, r = normalize_company(company), normalize_role(title)
     if not c or not r:
         return None
-    return f"{c}|{r}|{(city or '').lower().strip()}"
+    return f"{c}|{r}"

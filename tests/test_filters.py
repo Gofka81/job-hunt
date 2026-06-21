@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from job_radar.filters import build_location_filter, build_title_filter
-from job_radar.schema import Job, make_job_id
+from job_radar.schema import Job, make_vacancy_key
 
 
 def test_title_positive_and_negative():
@@ -32,10 +32,10 @@ def test_location_no_config_passes_all():
     assert ok("Anywhere")
 
 
-def test_job_id_is_stable_and_source_scoped():
-    a = make_job_id("reed", "Acme", "Data Engineer", "London", "https://x/1")
-    assert a == make_job_id("reed", "Acme", "Data Engineer", "London", "https://x/1")
-    assert a != make_job_id("adzuna", "Acme", "Data Engineer", "London", "https://x/1")
-    # Job.job_id derives city from raw location via clean_location("London, UK") → "London"
-    job = Job(source="reed", company="Acme", title="Data Engineer", url="https://x/9", location="London, UK")
-    assert job.job_id == a  # URL differs but role+city identical → same id
+def test_vacancy_key_is_stable_and_source_city_agnostic():
+    a = make_vacancy_key("Acme", "Data Engineer", "https://x/1")
+    assert a == make_vacancy_key("Acme", "Data Engineer", "https://x/1")
+    # source, URL and city are NOT in the key, so a different source + URL + city
+    # still hashes the same — the same role at the same company is one vacancy.
+    job = Job(source="adzuna", company="Acme", title="Data Engineer", url="https://x/9", location="London, UK")
+    assert job.vacancy_key == a

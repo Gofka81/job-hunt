@@ -72,16 +72,19 @@ def esc(s) -> str:
 
 
 def job_line(j: dict) -> str:
-    """One job as a tappable HTML line: title links to the posting."""
+    """One job as a tappable HTML line: title links to the posting. Shows the full
+    `locations` set (canonical cities, dashboard/bot rows) when present, else the
+    raw `location` (fresh scan-result dicts)."""
     title, company = esc(j.get("title")), esc(j.get("company"))
-    loc = esc(j.get("location") or "N/A")
+    locs = j.get("locations")
+    loc = esc(", ".join(locs) if locs else (j.get("location") or "N/A"))
     return f'• <a href="{esc(j.get("url"))}">{title}</a> — {company} · {loc}'
 
 
 def notify_new_jobs(result: dict) -> None:
-    """Push the new matches from a scan result (run_scan() output). `new_jobs` is
-    already one row per vacancy (role+city) — dedup happens at write time via the
-    job_id — so every entry here is a genuinely new vacancy worth a ping."""
+    """Push the new matches from a scan result (run_scan() output). `new_jobs`
+    holds only the rows upsert newly inserted (dedup is at write time via the
+    vacancy_key) — so every entry here is a genuinely new vacancy worth a ping."""
     new = result.get("new_jobs") or []
     to = chat_id()
     if not new or not to:
