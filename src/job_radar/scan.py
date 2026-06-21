@@ -11,6 +11,7 @@ from .config import ROOT, load_config
 
 logger = logging.getLogger("job_radar.scan")
 from .filters import build_location_filter, build_title_filter
+from .locations import set_priority
 from .schema import Job
 from .sources import REGISTRY
 from .sources.base import client
@@ -43,15 +44,13 @@ def run_scan(
     log("scan started")
     title_ok = build_title_filter(cfg.get("title_filter", {}))
     loc_ok = build_location_filter(cfg.get("location_filter"))
+    set_priority(cfg.get("priority_locations") or [])  # priority cities for city ordering
     sources_cfg = cfg.get("sources", {})
 
+    expire_hours = int(cfg.get("expire_after_hours", 24))
     if not dry_run:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        s = Store(db_path)
-        seen = s.seen_ids()  # job_ids on file = vacancies already stored (role+city)
-        s.close()
-    else:
-        seen = set()
+    dry_seen: set[str] = set()  # vacancy_keys this run — dry-run-only dedup
 
     http = client()
     totals = {"found": 0, "new": 0, "dupes": 0, "filtered": 0, "errors": 0, "expired": 0}
@@ -87,15 +86,22 @@ def run_scan(
             if not title_ok(job.title) or not loc_ok(job.location):
                 filtered += 1
                 continue
-            if job.job_id in seen:  # same vacancy (role+city) already stored — merge, don't re-add
-                dupes += 1
-                continue
-            seen.add(job.job_id)
-            new_jobs.append(job)  # a new job_id = a new vacancy → notify-worthy
-            if store and store.upsert(job):
-                new += 1
-            elif store is None:
-                new += 1
+            if store is not None:
+                # upsert owns dedup: True = new vacancy inserted, False = merged
+                # (repost / cross-source / same posting in another city).
+                if store.upsert(job, expire_hours):
+                    new += 1
+                    new_jobs.append(job)  # newly inserted → notify-worthy
+                else:
+                    dupes += 1
+            else:  # dry run — approximate dedup by vacancy_key within this run
+                vkey = job.vacancy_key
+                if vkey in dry_seen:
+                    dupes += 1
+                else:
+                    dry_seen.add(vkey)
+                    new += 1
+                    new_jobs.append(job)
         if store:
             store.record_run(run_id, src_started, sid, found, new, dupes, filtered, 0)
             store.close()
@@ -105,7 +111,6 @@ def run_scan(
         log(f"  ✓ {sid}: {found} found, {new} new, {dupes} dupes, {filtered} filtered")
 
     http.close()
-    totals["notify"] = len(notify_jobs)
 
     # Mark jobs that dropped off their (successfully-scanned) source > N hours ago
     # as 'expired' — the posting is closed/filled. Marked, not deleted, so it stays

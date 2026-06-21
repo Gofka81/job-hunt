@@ -6,9 +6,11 @@ from job_radar.schema import Job
 from job_radar.store import Store
 
 
-def _backdate(store: Store, job_id: str, hours: int) -> None:
+def _backdate(store: Store, url: str, hours: int) -> None:
+    # job_id is now a per-generation surrogate assigned in upsert, so tests key on
+    # the stable url instead.
     old = datetime.now(timezone.utc) - timedelta(hours=hours)
-    store.con.execute("UPDATE jobs SET last_seen = ? WHERE job_id = ?", [old, job_id])
+    store.con.execute("UPDATE jobs SET last_seen = ? WHERE url = ?", [old, url])
 
 
 def _store(tmp_path):
@@ -33,7 +35,7 @@ def test_mark_results_drops_job_from_pending(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")
     s.upsert(job)
-    updated = s.mark_results([{"job_id": job.job_id, "score": 8.5, "status": "applied"}])
+    updated = s.mark_results([{"url": "https://x/1", "score": 8.5, "status": "applied"}])
     assert updated == 1
     assert s.pending_jobs() == []  # no longer 'new'
     f = s.funnel()
@@ -59,7 +61,7 @@ def test_mark_results_defaults_status_to_evaluated(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")
     s.upsert(job)
-    s.mark_results([{"job_id": job.job_id, "score": 7.0}])
+    s.mark_results([{"url": "https://x/1", "score": 7.0}])
     assert s.funnel().get("evaluated") == 1
 
 
@@ -87,10 +89,10 @@ def test_list_jobs_q_searches_description(tmp_path):
     assert "description" not in spark[0]
 
 
-def test_upsert_computes_location_cleaned(tmp_path):
+def test_upsert_stores_locations_set(tmp_path):
     s = _store(tmp_path)
     s.upsert(_job("https://x/1", location="Sutton, London"))
-    assert s.list_jobs()[0]["location_cleaned"] == "London"  # computed at insert
+    assert s.list_jobs()[0]["locations"] == ["London"]  # canonical city, computed at insert
 
 
 def test_upsert_dedups_reposts_of_same_vacancy(tmp_path):
@@ -101,23 +103,40 @@ def test_upsert_dedups_reposts_of_same_vacancy(tmp_path):
     j2 = Job(source="adzuna", company="Harnham", title="Senior Analytics Engineer",
              url="https://x/57026970", location="London, UK")
     assert s.upsert(j1) is True
-    assert s.upsert(j2) is False  # same role+city (London) → same job_id → merged
+    assert s.upsert(j2) is False  # same company+role → same vacancy_key → merged
     assert len(s.list_jobs()) == 1
     assert s.list_jobs()[0]["url"] == "https://x/57013787"  # first-seen URL kept
 
 
-def test_upsert_keeps_same_role_in_different_city(tmp_path):
+def test_upsert_dedups_same_vacancy_across_sources(tmp_path):
     s = _store(tmp_path)
-    s.upsert(Job(source="adzuna", company="BigCorp", title="Data Engineer", url="https://x/1", location="London"))
-    s.upsert(Job(source="adzuna", company="BigCorp", title="Data Engineer", url="https://x/2", location="Edinburgh"))
-    assert len(s.list_jobs()) == 2  # different city → distinct vacancies, not lost
+    # same agency ad surfaced by both Adzuna and Reed → one row (source-agnostic id)
+    a = Job(source="adzuna", company="Harnham", title="Senior Data Engineer (Snowflake)",
+            url="https://adzuna/1", location="Glasgow")
+    r = Job(source="reed", company="Harnham", title="Senior Data Engineer (Snowflake)",
+            url="https://reed/2", location="Glasgow")
+    assert s.upsert(a) is True
+    assert s.upsert(r) is False  # cross-source duplicate → merged, not a second row
+    assert len(s.list_jobs()) == 1
+
+
+def test_upsert_merges_same_role_across_cities(tmp_path):
+    s = _store(tmp_path)
+    # one posting listed in several cities → ONE row whose locations set accumulates
+    s.upsert(Job(source="workable", company="BigCorp", title="Data Engineer", url="https://x/1", location="London"))
+    s.upsert(Job(source="workable", company="BigCorp", title="Data Engineer", url="https://x/1", location="Edinburgh"))
+    rows = s.list_jobs()
+    assert len(rows) == 1
+    # cities accumulate, priority-ordered (Edinburgh before London) so the preview
+    # never hides a priority city — and neither city is lost
+    assert rows[0]["locations"] == ["Edinburgh", "London"]
 
 
 def test_expire_marks_stale_new_job(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")
     s.upsert(job)
-    _backdate(s, job.job_id, 100)  # last seen 100h ago
+    _backdate(s, "https://x/1", 100)  # last seen 100h ago
     assert s.expire_stale(24, ["reed"]) == 1
     assert s.list_jobs()[0]["status"] == "expired"  # marked, not deleted (row kept)
     assert s.pending_jobs() == []                   # dropped off the active feed
@@ -133,8 +152,8 @@ def test_expire_keeps_human_verdict_history(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")
     s.upsert(job)
-    s.mark_results([{"job_id": job.job_id, "status": "applied"}])
-    _backdate(s, job.job_id, 100)
+    s.mark_results([{"url": "https://x/1", "status": "applied"}])
+    _backdate(s, "https://x/1", 100)
     assert s.expire_stale(24, ["reed"]) == 0  # applied = history, never expired
 
 
@@ -142,18 +161,30 @@ def test_expire_skips_sources_not_scanned(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")  # source = reed
     s.upsert(job)
-    _backdate(s, job.job_id, 100)
+    _backdate(s, "https://x/1", 100)
     assert s.expire_stale(24, ["adzuna"]) == 0  # reed didn't scan OK → don't touch
     assert s.expire_stale(24, ["reed"]) == 1
 
 
-def test_expired_job_reactivates_when_relisted(tmp_path):
+def test_relisted_after_expiry_creates_new_generation(tmp_path):
     s = _store(tmp_path)
     job = _job("https://x/1")
-    s.upsert(job)
-    _backdate(s, job.job_id, 100)
+    s.upsert(job, 24)
+    _backdate(s, "https://x/1", 100)  # last seen outside the 24h window
     s.expire_stale(24, ["reed"])
     assert s.list_jobs()[0]["status"] == "expired"
-    s.upsert(job)  # seen again in a later scan → reactivate
-    assert s.list_jobs()[0]["status"] == "new"
-    assert len(s.list_jobs()) == 1  # reactivated in place, not duplicated
+    # seen again after it expired → NOT a live sighting → fresh generation row,
+    # old expired row kept as history (no reactivation, no verdict carry-over)
+    assert s.upsert(job, 24) is True
+    rows = s.list_jobs()
+    assert len(rows) == 2
+    assert sorted(r["status"] for r in rows) == ["expired", "new"]
+
+
+def test_relisted_within_window_merges_in_place(tmp_path):
+    s = _store(tmp_path)
+    job = _job("https://x/1")
+    s.upsert(job, 24)
+    # still live (seen <24h ago) → re-sighting merges, no new row, no re-notify
+    assert s.upsert(job, 24) is False
+    assert len(s.list_jobs()) == 1

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import traceback
+from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -52,8 +54,16 @@ def _guarded_scan(db: str) -> None:
             notify.notify_new_jobs(result)
         except Exception:
             pass  # a Telegram hiccup must not affect the scan
-    except Exception as exc:  # never let a scan crash the server
-        _scan_status["last"] = {"error": str(exc)}
+    except Exception as exc:  # never let a scan crash the server — but log it loudly
+        # logger.exception emits the FULL traceback (file:line of the failure) at
+        # ERROR; we also surface the type + message so the cause is obvious in the
+        # logs instead of vanishing silently into the scan status.
+        logger.exception("scan failed — %s: %s", type(exc).__name__, exc)
+        _scan_status["last"] = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
     finally:
         _scan_status["running"] = False
         _scan_lock.release()

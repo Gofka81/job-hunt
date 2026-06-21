@@ -13,8 +13,25 @@ import re
 from functools import lru_cache
 
 # User's priority cities — chosen over any other city if both appear in a string
-# (e.g. "Cardiff or Edinburgh" -> Edinburgh).
-PRIORITY = ("edinburgh", "glasgow", "london")
+# (e.g. "Cardiff or Edinburgh" -> Edinburgh) and shown first in a multi-city
+# posting's preview. Single source of truth; config `priority_locations` overrides
+# it via set_priority() at scan startup, so the dashboard needs no list of its own.
+DEFAULT_PRIORITY = ("edinburgh", "glasgow", "london")
+_priority: tuple[str, ...] = DEFAULT_PRIORITY
+
+
+def set_priority(cities) -> None:
+    """Override the priority cities from config (`priority_locations`). Falsy/empty
+    keeps the default. Stored lowercased for matching."""
+    global _priority
+    _priority = tuple(c.lower().strip() for c in cities if c and c.strip()) or DEFAULT_PRIORITY
+
+
+def order_by_priority(cities: list[str]) -> list[str]:
+    """Sort a posting's canonical cities: priority cities first (in priority
+    order), then the rest alphabetically — so locations[0] is the best preview."""
+    pri = {c: i for i, c in enumerate(_priority)}
+    return sorted(cities, key=lambda c: (pri.get(c.lower(), len(pri)), c))
 
 # Region / nation fallbacks when no specific city matches.
 REGIONS = (
@@ -57,7 +74,7 @@ def clean_location(raw: str | None) -> str:
 
     matches = [m.group(0) for m in _city_regex().finditer(low)]
     if matches:
-        for target in PRIORITY:  # user's priority cities win
+        for target in _priority:  # user's priority cities win
             if target in matches:
                 return cities[target]
         best = max(matches, key=len)  # else the most specific (longest) match

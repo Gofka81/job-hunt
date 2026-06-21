@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .dedup import canonical_url, role_key
-from .locations import clean_location
+from .dedup import canonical_url, clean_stored_url, vacancy_key
 
 
-def make_job_id(source: str, company: str, title: str, city: str, url: str) -> str:
-    """Stable 16-char id = sha1(source : role_key). One vacancy (a role at a
-    company in a city) hashes to one id, so tracking-token variants AND agency
-    reposts under new ad-ids collapse onto a single row, while the same title in a
-    different city stays distinct. Falls back to the canonical URL when company or
-    title is blank (no safe role key), so blank-field listings aren't merged."""
-    key = role_key(company, title, city) or canonical_url(url)
-    return hashlib.sha1(f"{source}:{key}".encode()).hexdigest()[:16]
+def make_vacancy_key(company: str, title: str, url: str) -> str:
+    """16-char dedup key = sha1(vacancy_key). SOURCE- and CITY-AGNOSTIC: a role at
+    a company hashes to one key regardless of source or city, so cross-source
+    dupes, reposts, token variants, and multi-city listings all share it. Falls
+    back to the canonical URL when company or title is blank (no safe key)."""
+    key = vacancy_key(company, title) or canonical_url(url)
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
+def make_job_id(vkey: str, first_seen: datetime) -> str:
+    """Per-generation storage primary key = sha1(vacancy_key | first_seen). Unique
+    per row: dedup is by `vkey` (a recency-windowed lookup in Store.upsert), while
+    this id distinguishes generations — a relisted-after-expiry posting gets a new
+    first_seen → a new id → a fresh row, leaving the expired one as history."""
+    return hashlib.sha1(f"{vkey}|{first_seen.isoformat()}".encode()).hexdigest()[:16]
 
 
 class Job(BaseModel):
@@ -37,8 +43,12 @@ class Job(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
     @property
-    def job_id(self) -> str:
-        # city = canonical UK city; same value stored as location_cleaned, so the
-        # id and the column agree.
-        return make_job_id(self.source, self.company, self.title,
-                           clean_location(self.location), self.url)
+    def vacancy_key(self) -> str:
+        # Dedup identity (company+role, source/city-agnostic). The storage row id
+        # (job_id) is assigned in Store.upsert from this + first_seen.
+        return make_vacancy_key(self.company, self.title, self.url)
+
+    @property
+    def stored_url(self) -> str:
+        # Cleaned clickable link (tracking params dropped, functional ones kept).
+        return clean_stored_url(self.url)

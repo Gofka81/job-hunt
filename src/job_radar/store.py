@@ -1,27 +1,31 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
 
-from .locations import clean_location
-from .schema import Job
+from .locations import clean_location, order_by_priority
+from .schema import Job, make_job_id
+
+logger = logging.getLogger("job_radar.store")
 
 # Single-table schema, created on open. No migration framework: this is a
 # development project that re-scrapes freely, so we evolve the schema by editing
 # this DDL and re-running scans rather than carrying ordered migrations + backfills.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id           VARCHAR PRIMARY KEY,   -- sha1(source : canonical_url)
+    job_id           VARCHAR PRIMARY KEY,   -- sha1(vacancy_key | first_seen): per-generation row id
+    vacancy_key      VARCHAR,               -- sha1(company|role): dedup identity (NOT unique)
     source           VARCHAR,
     company          VARCHAR,
     title            VARCHAR,
-    url              VARCHAR,               -- original (tokens intact, clickable)
-    location         VARCHAR,
-    location_cleaned VARCHAR,               -- canonical UK city (locations.py)
+    url              VARCHAR,               -- cleaned clickable link (tracking params stripped)
+    location         VARCHAR,               -- raw first-seen location string
+    locations        JSON,                  -- set of canonical UK cities this posting lists
     description      VARCHAR,               -- plain-text JD (for tech-stack search)
     posted_at        DATE,
     salary_min       DOUBLE,
@@ -35,6 +39,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     last_seen        TIMESTAMP,
     raw              JSON
 );
+CREATE INDEX IF NOT EXISTS idx_jobs_vacancy ON jobs(vacancy_key);
 CREATE TABLE IF NOT EXISTS scan_runs (
     run_id       VARCHAR,
     started_at   TIMESTAMP,
@@ -77,45 +82,57 @@ class Store:
                     time.sleep(retry_delay)
         raise last  # type: ignore[misc]
 
-    def seen_ids(self) -> set[str]:
-        """job_ids already on file. A scan skips any job whose job_id is here.
-        Since job_id = sha1(source:role_key) (company+title+city), token-variants
-        AND agency reposts of one vacancy share an id and collapse automatically —
-        each stored row is already a distinct vacancy."""
-        return {row[0] for row in self.con.execute("SELECT job_id FROM jobs").fetchall()}
+    def upsert(self, job: Job, expire_hours: int = 24) -> bool:
+        """Merge `job` into the live row for its vacancy, or insert a new one.
 
-    def upsert(self, job: Job) -> bool:
-        """Insert a new job; if the same vacancy already exists just bump
-        last_seen. Returns True if the row was newly inserted. job_id is the
-        role+city identity, so a repost of the same role (new ad-id or fresh
-        tracking token) resolves to the same id and is recognised as a duplicate
-        instead of inserted again."""
+        Dedup identity is `vacancy_key` (company+role, source/city-agnostic). We
+        look for an existing row with the same vacancy_key seen within the last
+        `expire_hours` — i.e. still live. If found, this is the same vacancy
+        (a repost, a cross-source dupe, or the same posting in another city): bump
+        last_seen and UNION the city into `locations`; content is first-seen-wins.
+        Returns False (merged).
+
+        If none is live, this is a fresh vacancy (a brand-new role, or one that
+        expired and is now relisted): INSERT a new row with a per-generation
+        job_id and status='new'. Any old expired row for the same vacancy_key is
+        left untouched as history. Returns True (newly inserted)."""
         now = _now()
-        exists = self.con.execute(
-            "SELECT 1 FROM jobs WHERE job_id = ?", [job.job_id]
+        vkey = job.vacancy_key
+        city = clean_location(job.location)
+        cutoff = now - timedelta(hours=max(0, expire_hours))
+        live = self.con.execute(
+            """SELECT job_id, locations FROM jobs
+               WHERE vacancy_key = ? AND last_seen >= ?
+               ORDER BY last_seen DESC LIMIT 1""",
+            [vkey, cutoff],
         ).fetchone()
-        if exists:
-            # Bump last_seen. If the vacancy had expired (fell off its source) but
-            # is listed again, reactivate it to 'new'. Never touch a terminal human
-            # verdict (evaluated/applied/rejected) — only 'expired' flips back.
+        if live:
+            job_id, locs_json = live
+            locs = json.loads(locs_json) if locs_json else []
+            if city not in locs:
+                locs = order_by_priority([*locs, city])
             self.con.execute(
-                """UPDATE jobs SET last_seen = ?,
-                       status = CASE WHEN status = 'expired' THEN 'new' ELSE status END
-                   WHERE job_id = ?""",
-                [now, job.job_id],
+                "UPDATE jobs SET last_seen = ?, locations = ? WHERE job_id = ?",
+                [now, json.dumps(locs), job_id],
+            )
+            # Off by default; flip to DEBUG to trace why a listing didn't get its
+            # own row (e.g. a job that never appears on the dashboard).
+            logger.debug(
+                "merged %s (%s, %s) into %s [%s]",
+                job.stored_url, job.source, city, job_id, vkey,
             )
             return False
         self.con.execute(
             """INSERT INTO jobs
-               (job_id, source, company, title, url, location, location_cleaned, description,
-                posted_at, salary_min, salary_max, currency, remote, status,
+               (job_id, vacancy_key, source, company, title, url, location, locations,
+                description, posted_at, salary_min, salary_max, currency, remote, status,
                 first_seen, last_seen, raw)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?, ?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?, ?)""",
             [
-                job.job_id, job.source, job.company, job.title, job.url, job.location,
-                clean_location(job.location), job.description, job.posted_at, job.salary_min,
-                job.salary_max, job.currency, job.remote, now, now,
-                json.dumps(job.raw, default=str),
+                make_job_id(vkey, now), vkey, job.source, job.company, job.title,
+                job.stored_url, job.location, json.dumps([city]), job.description,
+                job.posted_at, job.salary_min, job.salary_max, job.currency, job.remote,
+                now, now, json.dumps(job.raw, default=str),
             ],
         )
         return True
@@ -165,7 +182,7 @@ class Store:
         return updated
 
     LIST_COLS = (
-        "job_id", "source", "company", "title", "url", "location", "location_cleaned",
+        "job_id", "source", "company", "title", "url", "location", "locations",
         "status", "score", "salary_min", "salary_max", "currency", "first_seen", "last_seen",
     )
 
@@ -189,7 +206,10 @@ class Store:
                 FROM jobs {where} ORDER BY first_seen DESC LIMIT ?""",
             params,
         ).fetchall()
-        return [dict(zip(self.LIST_COLS, r)) for r in rows]
+        out = [dict(zip(self.LIST_COLS, r)) for r in rows]
+        for d in out:  # locations stored as a JSON string → hand back a list
+            d["locations"] = json.loads(d["locations"]) if d["locations"] else []
+        return out
 
     def expire_stale(self, max_age_hours: int, sources: list[str]) -> int:
         """Mark still-`new` jobs not seen for `max_age_hours` as `expired` — they've

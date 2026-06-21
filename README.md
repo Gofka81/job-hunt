@@ -14,6 +14,42 @@ Two halves of a job search, split by what each one *should* cost:
 and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then does the LLM evaluation —
 **only on the handful of jobs that survive filtering, never the raw firehose.**
 
+## Features
+
+**Discovery (deterministic — zero LLM tokens)**
+- **6 source connectors** — Adzuna + Reed (aggregators) and Greenhouse / Lever / Ashby / Workable (company
+  ATS boards). Adding a source is one file + one registry line.
+- **Per-location targeting** — each priority area (Edinburgh / Glasgow / London / nationwide) gets its own
+  date-sorted query budget, so high-volume London can't crowd Scotland out of the results.
+- **Server-side narrowing** — Adzuna `category=it-jobs`, full-text `what_exclude`, and a tight
+  `max_days_old` window keep the result budget focused (and under the API's daily call limit).
+- **Title + location filters** — case-insensitive include/exclude lists, kept broad (all UK + remote).
+
+**Dedup & lifecycle**
+- **Write-time dedup** — `job_id = sha1(company | title | city)`: one vacancy = one row. Tracking-token
+  variants, agency reposts under new ad-ids, "London" vs "London, UK", and the *same ad on multiple
+  sources* all collapse — while the same title in a **different city** stays distinct (Edinburgh is
+  never lost to a London scrape).
+- **Closed-job expiry** — a job that drops off its source listing is marked `expired` (and reactivates
+  if it reappears), so the active list reflects what's still open.
+- **Single DB writer** — one process owns DuckDB (scheduled + on-demand scans + API), no lock fights.
+
+**Dashboard & notifications**
+- **Phone-friendly web dashboard** (`GET /`) — funnel chips, job list, and filters by status, location,
+  source, and min-salary, defaulting to the last 72h with a show-all toggle.
+- **Full-text / tech-stack search** — searches the job description server-side, so terms like *spark* or
+  *airflow* are found even when they're not in the title.
+- **In-dashboard config editor** — edit `config.yml` from your phone; validated and applied on next scan,
+  no redeploy.
+- **Telegram bot** — push notifications on new matches, plus `/jobs` (paginated), `/funnel`, `/scan`.
+
+**Sync & ops**
+- **HTTP API** to career-ops — `GET /api/pending` (shortlist out) / `POST /api/results` (verdicts back),
+  bearer-token, over a Cloudflare Tunnel. The PC `job-bridge` pulls/pushes; the Pi's DuckDB stays the
+  single source of truth.
+- **Config over the wire** — `GET/POST /api/config`, stored on the data volume, never in git.
+- **Deployed via Portainer GitOps** from this public repo; secrets are stack env vars.
+
 ## Deployment shape
 
 ```

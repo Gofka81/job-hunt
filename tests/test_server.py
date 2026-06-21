@@ -16,12 +16,13 @@ def client(tmp_path, monkeypatch):
     s = Store(db)
     job = Job(source="reed", company="Test", title="Data Engineer", url="https://x/1")
     s.upsert(job)
+    job_id = s.list_jobs()[0]["job_id"]  # surrogate id assigned at insert
     s.close()
     monkeypatch.setenv(TOKEN_ENV, TOKEN)
     monkeypatch.setenv("JOB_RADAR_CONFIG", str(tmp_path / "config.yml"))  # never touch real config
     c = TestClient(create_app(str(db)))
     c.headers.update({"authorization": f"Bearer {TOKEN}"})
-    return c, job.job_id
+    return c, job_id
 
 
 def test_healthz_is_open(tmp_path):
