@@ -45,10 +45,18 @@ DASHBOARD_HTML = """<!doctype html>
   #tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
   #msg { color:var(--muted); font-size:13px; padding:6px 0; }
   .cfgbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
-  #cfg { width:100%; min-height:60vh; padding:12px; border-radius:8px;
+  #cfg, #rubric { width:100%; min-height:60vh; padding:12px; border-radius:8px;
          border:1px solid var(--line); background:var(--card); color:var(--fg);
          font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical;
          white-space:pre; tab-size:2; }
+  .navbtn.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .score { background:#1d3a2a; color:#7CFC9E; font-weight:700; border-radius:20px;
+           padding:1px 9px; font-size:12px; }
+  .reason { color:var(--muted); font-size:13px; margin-top:5px; }
+  table.usage { width:100%; border-collapse:collapse; font-size:13px; }
+  table.usage th, table.usage td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  table.usage th { color:var(--muted); font-weight:600; }
+  .warn { color:#ff6b6b; font-weight:700; }
 </style>
 </head>
 <body>
@@ -62,8 +70,14 @@ DASHBOARD_HTML = """<!doctype html>
       <option value="score">Score</option>
     </select>
     <button id="scan">Scan now</button>
+    <button id="analyze" title="LLM triage of pending jobs">✨ Analyze</button>
   </span>
-  <button id="tab">⚙ Config</button>
+  <span id="nav">
+    <button class="navbtn on" data-view="jobs">Jobs</button>
+    <button class="navbtn" data-view="config" title="Config">⚙</button>
+    <button class="navbtn" data-view="rubric" title="Triage rubric">📋</button>
+    <button class="navbtn" data-view="usage" title="LLM token usage">📊</button>
+  </span>
   <button id="refresh">↻</button>
 </header>
 <div class="wrap">
@@ -96,6 +110,34 @@ DASHBOARD_HTML = """<!doctype html>
               placeholder="Loading config…"></textarea>
     <div class="muted" style="font-size:12px;margin-top:6px;">
       Edits save to the Pi’s config.yml — the next scan picks them up (no redeploy).
+    </div>
+  </div>
+
+  <div id="rubricView" style="display:none">
+    <div class="cfgbar">
+      <button id="rubSave">Save rubric</button>
+      <button id="rubReload">Reload</button>
+      <span id="rubMsg" class="muted"></span>
+    </div>
+    <textarea id="rubric" spellcheck="false" autocapitalize="off" autocomplete="off"
+              placeholder="Loading rubric…"></textarea>
+    <div class="muted" style="font-size:12px;margin-top:6px;">
+      The 0–10 triage scoring policy (candidate profile). Saves to analysis/rubric.md —
+      the next ✨ Analyze run uses it (no redeploy).
+    </div>
+  </div>
+
+  <div id="usageView" style="display:none">
+    <div class="cfgbar">
+      <button id="useReload">Reload</button>
+      <span id="useMsg" class="muted"></span>
+    </div>
+    <div id="useTotals" class="chips"></div>
+    <div id="useBox"></div>
+    <div class="muted" style="font-size:12px;margin-top:6px;">
+      LLM usage (resets on deploy). <b>calls</b> = LLM invocations — for the claude-cli
+      engine that’s your Pro quota (“Pro” = $0 real). <b>api $</b> appears only if the
+      metered API engine was used.
     </div>
   </div>
 </div>
@@ -172,17 +214,21 @@ function render(list) {
   $("#list").innerHTML = list.map(j => {
     const fresh = j.first_seen && (Date.now()-new Date(j.first_seen).getTime() < 86400000);
     const sal = salaryStr(j);
+    const hasScore = j.score != null;
     return `<div class="job">
       <a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>
       <div class="meta">
         <span>${esc(j.company)}</span>
+        ${hasScore ? `<span class="score">${Math.round(j.score)}/10</span>` : ''}
         <span class="pill">${esc(primaryLoc(j))}${locExtra(j)}</span>
         ${sal ? `<span class="pill">${sal}</span>` : ''}
         <span class="pill">${esc(j.source)}</span>
         <span class="pill">${esc(j.status)}</span>
         <span class="muted">${ago(j.first_seen)}</span>
         ${fresh ? '<span class="pill new">NEW</span>' : ''}
-      </div></div>`;
+      </div>
+      ${j.eval_reason ? `<div class="reason">✨ ${esc(j.eval_reason)}</div>` : ''}
+    </div>`;
   }).join("") || '<div class="muted">No jobs yet — hit “Scan now”.</div>';
 }
 
@@ -207,22 +253,26 @@ async function load() {
   } catch(e){ if (e.message!=="auth") $("#msg").textContent = "Error: "+e.message; }
 }
 
-// --- config editor --------------------------------------------------------
+// --- views (jobs / config / rubric / usage) -------------------------------
 let VIEW = "jobs";
+const LOADERS = { jobs: load, config: loadConfig, rubric: loadRubric, usage: loadUsage };
 function showView(v) {
   VIEW = v;
-  $("#jobsView").style.display = v==="jobs" ? "" : "none";
+  $("#jobsView").style.display   = v==="jobs"   ? "" : "none";
   $("#configView").style.display = v==="config" ? "" : "none";
-  $("#jobsTools").style.display = v==="jobs" ? "" : "none";
-  $("#tab").textContent = v==="jobs" ? "⚙ Config" : "← Jobs";
-  $("#tab").classList.toggle("on", v==="config");
+  $("#rubricView").style.display = v==="rubric" ? "" : "none";
+  $("#usageView").style.display  = v==="usage"  ? "" : "none";
+  $("#jobsTools").style.display  = v==="jobs"   ? "" : "none";
+  document.querySelectorAll(".navbtn").forEach(b => b.classList.toggle("on", b.dataset.view===v));
 }
+function refreshView(){ (LOADERS[VIEW] || load)(); }
+
+// --- config editor ---
 async function loadConfig() {
   if (!TOKEN) return showAuth("Enter your API token to edit config.");
   $("#cfgMsg").textContent = "loading…";
   try {
-    const txt = await (await api("/api/config")).text();
-    $("#cfg").value = txt;
+    $("#cfg").value = await (await api("/api/config")).text();
     $("#cfgMsg").textContent = "";
   } catch(e){ if (e.message!=="auth") $("#cfgMsg").textContent = "Error: "+e.message; }
 }
@@ -237,11 +287,84 @@ async function saveConfig() {
   } catch(e){ if (e.message!=="auth") $("#cfgMsg").textContent = "Error: "+e.message; }
 }
 
-$("#save").onclick = () => { TOKEN = $("#token").value.trim(); localStorage.setItem("jr_token", TOKEN); (VIEW==="config"?loadConfig():load()); };
-$("#refresh").onclick = () => VIEW==="config" ? loadConfig() : load();
-$("#tab").onclick = () => { if (VIEW==="jobs"){ showView("config"); loadConfig(); } else { showView("jobs"); } };
+// --- rubric editor ---
+async function loadRubric() {
+  if (!TOKEN) return showAuth("Enter your API token to edit the rubric.");
+  $("#rubMsg").textContent = "loading…";
+  try {
+    $("#rubric").value = await (await api("/api/rubric")).text();
+    $("#rubMsg").textContent = "";
+  } catch(e){ if (e.message!=="auth") $("#rubMsg").textContent = "Error: "+e.message; }
+}
+async function saveRubric() {
+  $("#rubMsg").textContent = "saving…";
+  try {
+    const r = await api("/api/rubric", {
+      method:"POST", headers:{ "content-type":"text/plain" }, body: $("#rubric").value });
+    $("#rubMsg").textContent = r.ok ? "✅ saved — used by the next ✨ Analyze run" : "❌ HTTP "+r.status;
+  } catch(e){ if (e.message!=="auth") $("#rubMsg").textContent = "Error: "+e.message; }
+}
+
+// --- usage view ---
+function fmtTok(n){ n=n||0; return n>=1000 ? (n/1000).toFixed(1)+"k" : ""+n; }
+async function loadUsage() {
+  if (!TOKEN) return showAuth("Enter your API token to view usage.");
+  $("#useMsg").textContent = "loading…";
+  try {
+    const u = await (await api("/api/usage")).json();
+    const t = u.totals;
+    // claude-cli spends Pro quota (calls), not $ — lead with calls; show api $ only if real.
+    const apiCost = (u.by_engine||[]).filter(e => e.engine==="anthropic")
+                      .reduce((s,e) => s+(e.cost_usd||0), 0);
+    $("#useTotals").innerHTML =
+      `<div class="chip"><b>${t.calls}</b><span>calls</span></div>`+
+      `<div class="chip"><b>${t.runs}</b><span>runs</span></div>`+
+      `<div class="chip"><b>${t.scored}</b><span>scored</span></div>`+
+      `<div class="chip"><b>${fmtTok(t.input_tokens)}</b><span>in tok</span></div>`+
+      `<div class="chip"><b>${fmtTok(t.output_tokens)}</b><span>out tok</span></div>`+
+      (apiCost>0 ? `<div class="chip"><b>$${apiCost.toFixed(4)}</b><span>api $</span></div>` : "");
+    const rows = (u.runs||[]).map(r => {
+      const calls = (r.scored||0)+(r.errors||0);
+      const cli = (r.engine||"").indexOf("cli") >= 0;
+      const costCell = cli ? '<span class="muted">Pro</span>' : `$${(r.cost_usd||0).toFixed(4)}`;
+      return `<tr>
+        <td>${ago(r.started_at)||"—"}</td><td>${esc(r.engine||r.stage)}</td><td>${esc(r.model)}</td>
+        <td>${calls}</td><td>${r.scored}/${r.jobs}</td>
+        <td>${fmtTok(r.input_tokens)} / ${fmtTok(r.output_tokens)}</td>
+        <td>${costCell}</td>
+        <td>${r.budget_hit?'<span class="warn">⛔ limit</span>':(r.errors?r.errors+" err":"")}</td></tr>`;
+    }).join("");
+    $("#useBox").innerHTML = rows
+      ? `<table class="usage"><tr><th>when</th><th>engine</th><th>model</th><th>calls</th>`
+        + `<th>scored</th><th>tok in/out</th><th>cost</th><th></th></tr>${rows}</table>`
+      : '<div class="muted">No LLM runs yet — hit ✨ Analyze.</div>';
+    $("#useMsg").textContent = "";
+  } catch(e){ if (e.message!=="auth") $("#useMsg").textContent = "Error: "+e.message; }
+}
+
+// --- triage (✨ Analyze) ---
+async function pollAnalyze() {
+  try {
+    const s = await (await api("/api/analyze")).json();
+    if (s.running) { $("#msg").textContent = "✨ Triage running…"; setTimeout(pollAnalyze, 2000); return; }
+    const last = s.last || {};
+    if (last.budget_hit)
+      $("#msg").innerHTML = '<span class="warn">⛔ Out of budget / rate limited — triage stopped.</span>';
+    else if (last.totals)
+      $("#msg").textContent = `✨ Triage done — scored ${last.totals.scored}, cost $${(last.cost_usd||0).toFixed(4)}`;
+    fetchJobs();
+  } catch(e){}
+}
+
+// --- wiring ---
+document.querySelectorAll(".navbtn").forEach(b => b.onclick = () => { showView(b.dataset.view); refreshView(); });
+$("#save").onclick = () => { TOKEN = $("#token").value.trim(); localStorage.setItem("jr_token", TOKEN); refreshView(); };
+$("#refresh").onclick = refreshView;
 $("#cfgSave").onclick = saveConfig;
 $("#cfgReload").onclick = loadConfig;
+$("#rubSave").onclick = saveRubric;
+$("#rubReload").onclick = loadRubric;
+$("#useReload").onclick = loadUsage;
 $("#sort").onchange = viewJobs;
 let qTimer;  // debounce server-side search so we don't refetch on every keystroke
 $("#q").oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(fetchJobs, 300); };
@@ -254,6 +377,16 @@ $("#scan").onclick = async () => {
   try {
     const r = await api("/api/scan", { method:"POST" });
     $("#msg").textContent = r.status===409 ? "A scan is already running…" : "Scan started — refresh in a bit.";
+  } catch(e){}
+};
+$("#analyze").onclick = async () => {
+  try {
+    const r = await api("/api/analyze", {
+      method:"POST", headers:{ "content-type":"application/json" },
+      body: JSON.stringify({ mode:"triage", target:"all_pending" }) });
+    if (r.status===409) { $("#msg").textContent = "Triage already running…"; return; }
+    $("#msg").textContent = "✨ Triage started…";
+    pollAnalyze();
   } catch(e){}
 };
 load();

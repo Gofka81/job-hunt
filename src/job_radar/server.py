@@ -22,8 +22,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import bot, notify, setup_logging
+from .analyze import run_analyze
 from .dashboard import DASHBOARD_HTML
-from .config import ROOT, load_config, read_config_text, save_config
+from .config import ROOT, load_config, load_rubric, read_config_text, save_config, save_rubric
 from .scan import run_scan
 from .store import Store
 
@@ -35,6 +36,12 @@ TOKEN_ENV = "JOB_RADAR_API_TOKEN"
 # one scan ever runs at a time (one DB writer). Both go through _guarded_scan.
 _scan_lock = threading.Lock()
 _scan_status: dict = {"running": False, "last": None}
+
+# Single-flight triage state, mirroring the scan lock. Triage reads the DB (and
+# writes score/reason per job), so it shares nothing with the scan writer beyond
+# both being background jobs — its own lock keeps two triage runs from overlapping.
+_analyze_lock = threading.Lock()
+_analyze_status: dict = {"running": False, "last": None}
 
 # Telegram webhook secret, set at startup if the bot is configured.
 _WEBHOOK: dict = {"secret": None}
@@ -67,6 +74,46 @@ def _guarded_scan(db: str) -> None:
     finally:
         _scan_status["running"] = False
         _scan_lock.release()
+
+
+def _guarded_analyze(db: str, job_ids: list[str] | None, only_untriaged: bool) -> None:
+    """Run one triage pass unless one's already going (then no-op). Mirrors
+    _guarded_scan: single-flight + loud error logging into the status."""
+    if not _analyze_lock.acquire(blocking=False):
+        return
+    _analyze_status["running"] = True
+    try:
+        result = run_analyze(
+            load_config(), db, job_ids=job_ids, only_untriaged=only_untriaged
+        )
+        _analyze_status["last"] = result
+        if result.get("budget_hit"):  # surface "out of budget" to the phone
+            try:
+                cid = notify.chat_id()
+                if cid:
+                    notify.send_message(
+                        cid,
+                        "⛔ <b>LLM budget / rate limit hit</b> — triage stopped after "
+                        f"{result['totals']['scored']} scored. Check usage.",
+                    )
+            except Exception:
+                pass  # a Telegram hiccup must not affect the run
+    except Exception as exc:  # never crash the server — log the full traceback
+        logger.exception("triage failed — %s: %s", type(exc).__name__, exc)
+        _analyze_status["last"] = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        _analyze_status["running"] = False
+        _analyze_lock.release()
+
+
+class AnalyzePayload(BaseModel):
+    # MVP: triage only. `target` is "all_pending" (default) or a list of job_ids.
+    mode: str = "triage"
+    target: str | list[str] = "all_pending"
 
 
 class Verdict(BaseModel):
@@ -161,6 +208,23 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(400, f"invalid config: {exc}")
         return {"saved": True, "sources": sorted((data.get("sources") or {}).keys())}
 
+    @app.get("/api/rubric", response_class=PlainTextResponse)
+    def get_rubric(_: None = Depends(require_token)) -> str:
+        """Current triage rubric (or the baked example if none saved) — for the editor."""
+        return load_rubric()
+
+    @app.post("/api/rubric")
+    def post_rubric(
+        body: str = Body(..., media_type="text/plain"),
+        _: None = Depends(require_token),
+    ) -> dict:
+        """Save the triage rubric. The next triage run picks it up — no redeploy."""
+        try:
+            save_rubric(body)
+        except Exception as exc:  # empty / unwritable
+            raise HTTPException(400, f"invalid rubric: {exc}")
+        return {"saved": True}
+
     @app.post("/api/scan", status_code=202)
     def scan_now(_: None = Depends(require_token)) -> dict:
         """Trigger a scan on demand (the dashboard 'Scan now' button). Returns
@@ -174,6 +238,41 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def scan_status(_: None = Depends(require_token)) -> dict:
         """Last scan's result + whether one is running now."""
         return {"running": _scan_status["running"], "last": _scan_status["last"]}
+
+    @app.post("/api/analyze", status_code=202)
+    def analyze_now(
+        payload: AnalyzePayload, _: None = Depends(require_token)
+    ) -> dict:
+        """Trigger on-Pi LLM triage of pending jobs (the dashboard 'Analyze'
+        button). Returns immediately; runs in the background. 409 if one's already
+        going. `target`: 'all_pending' (default) or a list of job_ids."""
+        if payload.mode != "triage":
+            raise HTTPException(400, "only mode='triage' is supported")
+        if _analyze_lock.locked():
+            raise HTTPException(409, "a triage run is already running")
+        target = payload.target
+        job_ids = target if isinstance(target, list) else None
+        # explicit job_ids → re-score them even if already triaged; else only-new
+        only_untriaged = job_ids is None
+        threading.Thread(
+            target=_guarded_analyze, args=(db, job_ids, only_untriaged), daemon=True
+        ).start()
+        return {"started": True}
+
+    @app.get("/api/analyze")
+    def analyze_status(_: None = Depends(require_token)) -> dict:
+        """Last triage run's result + whether one is running now."""
+        return {"running": _analyze_status["running"], "last": _analyze_status["last"]}
+
+    @app.get("/api/usage")
+    def usage(
+        limit: int = 50,
+        _: None = Depends(require_token),
+        store: Store = Depends(get_store),
+    ) -> dict:
+        """LLM token spend — recent runs, grand totals, per-model breakdown. Feeds
+        the dashboard Usage view so you can see what's consuming tokens."""
+        return store.llm_usage(limit)
 
     @app.post("/telegram/webhook")
     def telegram_webhook(

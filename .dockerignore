@@ -14,3 +14,4 @@ data
 *.duckdb.wal
 .env
 config.yml
+analysis/rubric.md
