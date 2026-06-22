@@ -33,8 +33,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     currency         VARCHAR,
     remote           BOOLEAN,
     status           VARCHAR DEFAULT 'new',
-    score            DOUBLE,
+    score            DOUBLE,                -- 0-10 fit score (LLM triage OR career-ops verdict)
     report_num       INTEGER,
+    eval_reason      VARCHAR,               -- one-line triage rationale (on-Pi LLM analysis)
+    evaluated_at     TIMESTAMP,             -- when triage last scored this row
+    engine           VARCHAR,               -- model/engine that produced score+reason
     first_seen       TIMESTAMP,
     last_seen        TIMESTAMP,
     raw              JSON
@@ -51,6 +54,27 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     filtered     INTEGER,
     errors       INTEGER,
     error_detail VARCHAR
+);
+-- LLM spend ledger: one row per triage/deep run. Sibling of scan_runs (resets on
+-- deploy with the rest of the DB) — enough to see what's consuming tokens over the
+-- recent window on the dashboard Usage view.
+CREATE TABLE IF NOT EXISTS llm_runs (
+    run_id            VARCHAR,
+    stage             VARCHAR,        -- 'triage' | 'deep'
+    model             VARCHAR,
+    engine            VARCHAR,        -- 'claude-cli' (Pro sub) | 'anthropic' (API)
+    started_at        TIMESTAMP,
+    finished_at       TIMESTAMP,
+    jobs              INTEGER,        -- jobs attempted this run
+    scored            INTEGER,        -- jobs successfully scored
+    errors            INTEGER,
+    input_tokens      BIGINT,
+    output_tokens     BIGINT,
+    cache_read_tokens BIGINT,
+    cache_write_tokens BIGINT,
+    cost_usd          DOUBLE,
+    budget_hit        BOOLEAN,        -- true if the run stopped on a rate/billing limit
+    note              VARCHAR
 );
 """
 
@@ -181,9 +205,63 @@ class Store:
             updated += 1
         return updated
 
+    # --- on-Pi LLM triage (analyze.py) ------------------------------------
+    # Triage scores fit from the stored JD. It writes score + eval_reason only —
+    # NEVER the `status` column (that's the workflow lane owned by the bridge /
+    # career-ops verdicts; pending_jobs() selects status='new', so writing status
+    # here would drop scored jobs off the PC feed).
+    ANALYZE_COLS = ("job_id", "company", "title", "location", "locations", "description")
+
+    def jobs_for_analysis(
+        self, job_ids: list[str] | None = None, *, only_untriaged: bool = True
+    ) -> list[dict]:
+        """Rows for the triage worker. Default: all still-pending (status='new')
+        jobs not yet scored (evaluated_at IS NULL). Pass `job_ids` to target a
+        specific set (e.g. a re-score), or only_untriaged=False to re-score all
+        pending. Newest first so a capped run scores the freshest jobs."""
+        where = ["status = 'new'"]
+        params: list = []
+        if only_untriaged:
+            where.append("evaluated_at IS NULL")
+        if job_ids:
+            where.append(f"job_id IN ({','.join('?' * len(job_ids))})")
+            params.extend(job_ids)
+        rows = self.con.execute(
+            f"""SELECT {", ".join(self.ANALYZE_COLS)}
+                FROM jobs WHERE {" AND ".join(where)}
+                ORDER BY first_seen DESC""",
+            params,
+        ).fetchall()
+        out = [dict(zip(self.ANALYZE_COLS, r)) for r in rows]
+        for d in out:
+            d["locations"] = json.loads(d["locations"]) if d["locations"] else []
+        return out
+
+    def apply_analysis(
+        self,
+        job_id: str,
+        *,
+        score: float,
+        reason: str,
+        engine: str,
+        at: datetime | None = None,
+    ) -> bool:
+        """Write a triage verdict (score + reason) for one job. Leaves `status`
+        and `report_num` untouched. Returns False if the job_id is unknown."""
+        if not self.con.execute("SELECT 1 FROM jobs WHERE job_id = ?", [job_id]).fetchone():
+            return False
+        self.con.execute(
+            """UPDATE jobs
+               SET score = ?, eval_reason = ?, engine = ?, evaluated_at = ?
+               WHERE job_id = ?""",
+            [score, reason, engine, at or _now(), job_id],
+        )
+        return True
+
     LIST_COLS = (
         "job_id", "source", "company", "title", "url", "location", "locations",
-        "status", "score", "salary_min", "salary_max", "currency", "first_seen", "last_seen",
+        "status", "score", "eval_reason", "salary_min", "salary_max", "currency",
+        "first_seen", "last_seen",
     )
 
     def list_jobs(self, limit: int = 500, q: str | None = None) -> list[dict]:
@@ -259,6 +337,80 @@ class Store:
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             [run_id, started, _now(), source, found, new, dupes, filtered, errors, error_detail],
         )
+
+    # --- LLM spend ledger (analyze.py) ------------------------------------
+    def record_llm_run(
+        self,
+        run_id: str,
+        *,
+        stage: str,
+        model: str,
+        engine: str = "",
+        started: datetime,
+        jobs: int,
+        scored: int,
+        errors: int,
+        usage: dict,
+        cost_usd: float,
+        budget_hit: bool = False,
+        note: str = "",
+    ) -> None:
+        """Write one row to the LLM spend ledger. `usage` carries the four token
+        counts; `engine` is 'claude-cli' or 'anthropic' so the dashboard can show
+        calls (Pro quota) vs $ (API) appropriately."""
+        self.con.execute(
+            """INSERT INTO llm_runs
+               (run_id, stage, model, engine, started_at, finished_at, jobs, scored, errors,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                cost_usd, budget_hit, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                run_id, stage, model, engine, started, _now(), jobs, scored, errors,
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                usage.get("cache_read_tokens", 0), usage.get("cache_write_tokens", 0),
+                cost_usd, budget_hit, note,
+            ],
+        )
+
+    USAGE_COLS = (
+        "run_id", "stage", "model", "engine", "started_at", "finished_at", "jobs",
+        "scored", "errors", "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "cost_usd", "budget_hit", "note",
+    )
+
+    def llm_usage(self, limit: int = 50) -> dict:
+        """Recent LLM runs + grand totals — for the dashboard Usage view. `calls` =
+        LLM invocations (scored + errors); for the claude-cli engine that's the real
+        constraint (Pro quota), so the dashboard leads with it rather than $."""
+        rows = self.con.execute(
+            f"""SELECT {", ".join(self.USAGE_COLS)}
+                FROM llm_runs ORDER BY started_at DESC LIMIT ?""",
+            [limit],
+        ).fetchall()
+        runs = [dict(zip(self.USAGE_COLS, r)) for r in rows]
+        tot = self.con.execute(
+            """SELECT coalesce(sum(scored),0), coalesce(sum(errors),0),
+                      coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                      coalesce(sum(cache_read_tokens),0), coalesce(sum(cost_usd),0.0), count(*)
+               FROM llm_runs"""
+        ).fetchone()
+        by_engine = self.con.execute(
+            """SELECT coalesce(engine,'?'), count(*), coalesce(sum(scored+errors),0),
+                      coalesce(sum(cost_usd),0.0)
+               FROM llm_runs GROUP BY 1 ORDER BY 3 DESC"""
+        ).fetchall()
+        return {
+            "runs": runs,
+            "totals": {
+                "scored": tot[0], "calls": tot[0] + tot[1], "input_tokens": tot[2],
+                "output_tokens": tot[3], "cache_read_tokens": tot[4],
+                "cost_usd": round(tot[5], 4), "runs": tot[6],
+            },
+            "by_engine": [
+                {"engine": e, "runs": n, "calls": c, "cost_usd": round(cost, 4)}
+                for e, n, c, cost in by_engine
+            ],
+        }
 
     def close(self) -> None:
         self.con.close()

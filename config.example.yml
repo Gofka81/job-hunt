@@ -142,3 +142,18 @@ sources:
       # Verified working (returns the CE REST JSON).
       - { host: "jpmc.fa.oraclecloud.com", site: "CX_1001", name: "JPMorgan" }
       # - { host: "hdpc.fa.us2.oraclecloud.com", site: "LateralHiring", name: "..." }  ← verify
+
+# --- On-Pi LLM triage (Stage 1) ---
+# Scores already-discovered jobs for fit from the stored JD (0-10). Discovery
+# stays deterministic — this is the only LLM step in this repo, and it only ranks
+# the pending list. Triggered from the dashboard/phone (POST /api/analyze); writes
+# score + reason, never touches the workflow `status`. Needs ANTHROPIC_API_KEY.
+# The personal candidate profile lives in a SEPARATE file, analysis/rubric.md
+# (gitignored; baked fallback analysis/rubric.example.md), editable via
+# GET/POST /api/rubric — not here, to keep CV/comp out of this public example.
+analysis:
+  engine: claude-cli           # DEFAULT: Claude Code on your Pro subscription (no API $;
+                               #   needs the `claude` CLI logged in / CLAUDE_CODE_OAUTH_TOKEN).
+                               # 'api' = Anthropic SDK (pay-per-token, needs ANTHROPIC_API_KEY).
+  model: claude-haiku-4-5      # cheapest tier; fine for 0-10 triage
+  max_jobs: 200                # hard cap on LLM calls per run (cost ceiling)

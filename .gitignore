@@ -220,6 +220,7 @@ __marimo__/
 # --- job-hunt project ---
 .env
 config.yml
+analysis/rubric.md
 data/*.duckdb
 data/*.duckdb.wal
 *.duckdb
