@@ -156,4 +156,8 @@ analysis:
                                #   needs the `claude` CLI logged in / CLAUDE_CODE_OAUTH_TOKEN).
                                # 'api' = Anthropic SDK (pay-per-token, needs ANTHROPIC_API_KEY).
   model: claude-haiku-4-5      # cheapest tier; fine for 0-10 triage
-  max_jobs: 200                # hard cap on LLM calls per run (cost ceiling)
+  # Hard cap on LLM calls per batch run. With the claude-cli engine each call eats
+  # your Pro 5-hour quota, so keep this modest (a big batch can rate-limit you AND
+  # lock you out of interactive Claude). ~15-25 is sane for Pro; re-run for the rest,
+  # or use a card's ✨ to score one at a time. Raise it only on the metered api engine.
+  max_jobs: 20
