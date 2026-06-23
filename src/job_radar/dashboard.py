@@ -29,12 +29,15 @@ DASHBOARD_HTML = """<!doctype html>
   .chip b { display:block; font-size:20px; }
   .chip span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
   .controls { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
-  .job { background:var(--card); border:1px solid var(--line); border-radius:10px;
-         padding:11px 13px; margin-bottom:9px; }
-  .job a { color:var(--fg); text-decoration:none; font-weight:600; }
+  .job { background:var(--card); border:1px solid var(--line); border-left:3px solid var(--line);
+         border-radius:10px; padding:11px 13px 12px; margin-bottom:10px; }
+  .job.sb-hi  { border-left-color:#2ecc71; }
+  .job.sb-mid { border-left-color:#f1c40f; }
+  .job.sb-lo  { border-left-color:#e74c3c; }
+  .job a { color:var(--fg); text-decoration:none; font-weight:600; font-size:15px; }
   .job a:hover { color:var(--accent); }
-  .jobhead { display:flex; gap:8px; align-items:flex-start; justify-content:space-between; }
-  .jobhead a { flex:1; }
+  .jobhead { display:flex; gap:10px; align-items:flex-start; justify-content:space-between; }
+  .jobhead a { flex:1; line-height:1.3; }
   .meta { color:var(--muted); font-size:13px; margin-top:4px; display:flex; gap:8px; flex-wrap:wrap; }
   .pill { background:var(--pill); border-radius:20px; padding:1px 9px; font-size:12px; }
   .new { background:var(--new); color:#06210f; font-weight:700; }
@@ -50,7 +53,8 @@ DASHBOARD_HTML = """<!doctype html>
   #refresh { min-width:44px; }
   .navbtn.on { background:var(--accent); color:#fff; border-color:var(--accent); }
   .back { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
-  .mini { padding:4px 10px; min-height:30px; font-size:13px; }
+  .mini { padding:4px 9px; min-height:30px; font-size:14px; line-height:1; flex:0 0 auto; }
+  .mini:hover { border-color:var(--accent); }
   #msg { color:var(--muted); font-size:13px; padding:6px 0; }
   .cfgbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
   #cfg, #rubric { width:100%; min-height:60vh; padding:12px; border-radius:8px;
@@ -58,9 +62,12 @@ DASHBOARD_HTML = """<!doctype html>
          font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical;
          white-space:pre; tab-size:2; }
   .navbtn.on { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .score { background:#1d3a2a; color:#7CFC9E; font-weight:700; border-radius:20px;
-           padding:1px 9px; font-size:12px; }
-  .reason { color:var(--muted); font-size:13px; margin-top:5px; }
+  .score { font-weight:800; border-radius:6px; padding:2px 8px; font-size:12px; letter-spacing:.02em; }
+  .score.s-hi  { background:#1d3a2a; color:#7CFC9E; }
+  .score.s-mid { background:#3a331d; color:#FFD479; }
+  .score.s-lo  { background:#3a1d1d; color:#ff9b9b; }
+  .reason { color:#b9bdc7; font-size:13px; margin-top:7px; line-height:1.4;
+            border-top:1px solid var(--line); padding-top:7px; }
   table.usage { width:100%; border-collapse:collapse; font-size:13px; }
   table.usage th, table.usage td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
   table.usage th { color:var(--muted); font-weight:600; }
@@ -221,28 +228,28 @@ function salaryStr(j) {
   if (lo) return `${k(lo)}+`;
   return "";
 }
+function scoreBand(s) { return s == null ? "" : s >= 7 ? "hi" : s >= 5 ? "mid" : "lo"; }
 function render(list) {
   $("#list").innerHTML = list.map(j => {
-    const fresh = j.first_seen && (Date.now()-new Date(j.first_seen).getTime() < 86400000);
     const sal = salaryStr(j);
     const hasScore = j.score != null;
-    return `<div class="job">
+    const band = scoreBand(j.score);
+    return `<div class="job${band ? " sb-"+band : ""}">
       <div class="jobhead">
+        ${hasScore ? `<span class="score s-${band}">${Math.round(j.score)}</span>` : ""}
         <a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>
         <button class="mini" data-jid="${esc(j.job_id)}"
-          title="Triage just this job (uses 1 Claude call)">✨${hasScore ? ' re' : ''}</button>
+          title="${hasScore ? "Re-score" : "Score"} this job (1 Claude call)">✨</button>
       </div>
       <div class="meta">
         <span>${esc(j.company)}</span>
-        ${hasScore ? `<span class="score">${Math.round(j.score)}/10</span>` : ''}
         <span class="pill">${esc(primaryLoc(j))}${locExtra(j)}</span>
-        ${sal ? `<span class="pill">${sal}</span>` : ''}
+        ${sal ? `<span class="pill">${sal}</span>` : ""}
         <span class="pill">${esc(j.source)}</span>
-        <span class="pill">${esc(j.status)}</span>
+        ${j.status && j.status !== "new" ? `<span class="pill">${esc(j.status)}</span>` : ""}
         <span class="muted">${ago(j.first_seen)}</span>
-        ${fresh ? '<span class="pill new">NEW</span>' : ''}
       </div>
-      ${j.eval_reason ? `<div class="reason">✨ ${esc(j.eval_reason)}</div>` : ''}
+      ${j.eval_reason ? `<div class="reason">${esc(j.eval_reason)}</div>` : ""}
     </div>`;
   }).join("") || '<div class="muted">No jobs yet — hit “Scan now”.</div>';
 }
@@ -328,29 +335,33 @@ async function loadUsage() {
   try {
     const u = await (await api("/api/usage")).json();
     const t = u.totals;
-    // claude-cli spends Pro quota (calls), not $ — lead with calls; show api $ only if real.
+    // claude-cli spends Pro quota (CALLS), not tokens/$ — calls is the real meter.
+    // Token counts are dropped from the headline: "input" understates wildly (Claude
+    // Code's ~12k cached system prompt isn't in input_tokens) and on Pro it's $0.
     const apiCost = (u.by_engine||[]).filter(e => e.engine==="anthropic")
                       .reduce((s,e) => s+(e.cost_usd||0), 0);
     $("#useTotals").innerHTML =
       `<div class="chip"><b>${t.calls}</b><span>calls</span></div>`+
       `<div class="chip"><b>${t.runs}</b><span>runs</span></div>`+
       `<div class="chip"><b>${t.scored}</b><span>scored</span></div>`+
-      `<div class="chip"><b>${fmtTok(t.input_tokens)}</b><span>in tok</span></div>`+
-      `<div class="chip"><b>${fmtTok(t.output_tokens)}</b><span>out tok</span></div>`+
       (apiCost>0 ? `<div class="chip"><b>$${apiCost.toFixed(4)}</b><span>api $</span></div>` : "");
     const rows = (u.runs||[]).map(r => {
       const calls = (r.scored||0)+(r.errors||0);
       const cli = (r.engine||"").indexOf("cli") >= 0;
-      const costCell = cli ? '<span class="muted">Pro</span>' : `$${(r.cost_usd||0).toFixed(4)}`;
+      // honest input = uncached + cache-read + cache-write (CLI's big cached prompt)
+      const inTok = (r.input_tokens||0)+(r.cache_read_tokens||0)+(r.cache_write_tokens||0);
+      const meter = cli ? '<span class="muted">Pro</span>' : `$${(r.cost_usd||0).toFixed(4)}`;
+      const flag = r.note==="auth failed" ? '<span class="warn">⛔ not logged in</span>'
+                 : r.budget_hit ? '<span class="warn">⛔ limit</span>'
+                 : (r.errors ? r.errors+" err" : "");
       return `<tr>
-        <td>${ago(r.started_at)||"—"}</td><td>${esc(r.engine||r.stage)}</td><td>${esc(r.model)}</td>
+        <td>${ago(r.started_at)||"—"}</td><td>${esc(r.engine||r.stage)}</td>
         <td>${calls}</td><td>${r.scored}/${r.jobs}</td>
-        <td>${fmtTok(r.input_tokens)} / ${fmtTok(r.output_tokens)}</td>
-        <td>${costCell}</td>
-        <td>${r.budget_hit?'<span class="warn">⛔ limit</span>':(r.errors?r.errors+" err":"")}</td></tr>`;
+        <td>${fmtTok(inTok)} / ${fmtTok(r.output_tokens)}</td>
+        <td>${meter}</td><td>${flag}</td></tr>`;
     }).join("");
     $("#useBox").innerHTML = rows
-      ? `<table class="usage"><tr><th>when</th><th>engine</th><th>model</th><th>calls</th>`
+      ? `<table class="usage"><tr><th>when</th><th>engine</th><th>calls</th>`
         + `<th>scored</th><th>tok in/out</th><th>cost</th><th></th></tr>${rows}</table>`
       : '<div class="muted">No LLM runs yet — hit ✨ Analyze.</div>';
     $("#useMsg").textContent = "";
@@ -408,7 +419,16 @@ $("#scan").onclick = async () => {
     $("#msg").textContent = r.status===409 ? "A scan is already running…" : "Scan started — refresh in a bit.";
   } catch(e){}
 };
-$("#analyze").onclick = () => triage("all_pending");
+$("#analyze").onclick = () => {
+  // count untriaged pending so we can warn before firing a big batch (each = 1
+  // Claude call against your Pro quota; the server also caps at analysis.max_jobs).
+  const pending = JOBS.filter(j => j.status==="new" && j.score==null).length;
+  if (!pending) { $("#msg").textContent = "Nothing new to triage."; return; }
+  if (pending > 10 && !confirm(
+      `Triage ${pending} new jobs? That's up to ${pending} Claude calls against your `
+      + `Pro quota (capped by analysis.max_jobs). Use a card's ✨ for one at a time.`)) return;
+  triage("all_pending");
+};
 // per-card ✨ button → triage just that one job (event delegation; re-scores even
 // if already triaged, since the server treats an explicit job_id list as force).
 $("#list").onclick = (e) => {
