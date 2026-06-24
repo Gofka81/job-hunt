@@ -53,7 +53,8 @@ def run_scan(
     dry_seen: set[str] = set()  # vacancy_keys this run — dry-run-only dedup
 
     http = client()
-    totals = {"found": 0, "new": 0, "dupes": 0, "filtered": 0, "errors": 0, "expired": 0}
+    totals = {"found": 0, "new": 0, "dupes": 0, "filtered": 0, "errors": 0, "expired": 0,
+              "enriched": 0}
     new_jobs: list[Job] = []  # newly-inserted vacancies → exactly what we notify
     live_sources: list[str] = []  # sources that fetched OK this run (safe to prune)
     started = datetime.now(timezone.utc)
@@ -110,6 +111,28 @@ def run_scan(
             totals[k] += v
         log(f"  ✓ {sid}: {found} found, {new} new, {dupes} dupes, {filtered} filtered")
 
+    # Enrich truncated JDs: jobs with jd_full=false (Reed snippets) get their full
+    # text from the source's detail API. One-shot per job (the flag flips), so this
+    # only touches newly-inserted snippets. Fetch over HTTP first (no DB lock), then
+    # a quick write burst. Best-effort — a failure just leaves the snippet.
+    if not dry_run and cfg.get("fetch_full_jd", True):
+        from .sources import reed
+        s = Store(db_path)
+        need = s.jobs_needing_full_jd()
+        s.close()
+        full_jds = [
+            (j["job_id"], reed.full_description(j["raw"], http))
+            for j in need if j["source"] == "reed"
+        ]
+        full_jds = [(jid, txt) for jid, txt in full_jds if txt]
+        if full_jds:
+            s = Store(db_path)
+            for jid, txt in full_jds:
+                s.apply_full_jd(jid, txt)
+            s.close()
+            totals["enriched"] = len(full_jds)
+            log(f"  ↑ enriched {len(full_jds)} Reed JD(s) via detail API")
+
     http.close()
 
     # Mark jobs that dropped off their (successfully-scanned) source > N hours ago
@@ -161,8 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     bar = "━" * 45
     date = datetime.now(timezone.utc).date().isoformat()
     print(f"\n{bar}\nJob Scan — {date}\n{bar}")
-    for k in ("found", "new", "dupes", "filtered", "errors", "expired"):
-        print(f"{k.capitalize()+':':9} {t[k]}")
+    for k in ("found", "new", "dupes", "filtered", "errors", "expired", "enriched"):
+        print(f"{k.capitalize()+':':9} {t.get(k, 0)}")
     if result["new_jobs"]:
         print("\nNew matches:")
         for j in result["new_jobs"]:

@@ -31,6 +31,38 @@ def test_run_scan_completes_end_to_end(tmp_path, monkeypatch):
     assert len(result["new_jobs"]) == 1            # one vacancy to notify about
 
 
+class _ReedSnippet:
+    """A Reed source returning a snippet job (jd_full=False) with a detail-API id."""
+
+    ID = "reed"
+
+    @staticmethod
+    def fetch(cfg, http):
+        return [Job(source="reed", company="Acme", title="Data Engineer", url="https://x/1",
+                    location="Edinburgh", description="short snippet", jd_full=False,
+                    raw={"jobId": "123"})]
+
+
+def test_run_scan_enriches_reed_jd_once(tmp_path, monkeypatch):
+    from job_radar.sources import reed
+    from job_radar.store import Store
+    monkeypatch.setattr(scan, "REGISTRY", {"reed": _ReedSnippet})
+    monkeypatch.setattr(reed, "full_description", lambda raw, http, key=None: "FULL JD " * 100)
+    db = str(tmp_path / "db.duckdb")
+    cfg = {"sources": {"reed": {"enabled": True}}}
+
+    res = scan.run_scan(cfg, db)
+    assert res["totals"]["enriched"] == 1
+    s = Store(db)
+    assert s.jobs_needing_full_jd() == []                 # flag flipped → none left
+    desc, jd_full = s.con.execute("SELECT description, jd_full FROM jobs").fetchone()
+    s.close()
+    assert "FULL JD" in desc and jd_full is True           # snippet replaced
+
+    res2 = scan.run_scan(cfg, db)                          # same job re-seen → merge
+    assert res2["totals"]["enriched"] == 0                 # not re-fetched
+
+
 def test_run_scan_dry_run_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(scan, "REGISTRY", {"fake": _FakeSource})
     db = tmp_path / "db.duckdb"

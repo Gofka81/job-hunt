@@ -10,6 +10,24 @@ from .base import cfg_locations, strip_tags
 
 ID = "reed"
 BASE = "https://www.reed.co.uk/api/1.0/search"
+DETAIL = "https://www.reed.co.uk/api/1.0/jobs"  # per-job detail → FULL description
+
+
+def full_description(raw: dict, http: httpx.Client, key: str | None = None) -> str | None:
+    """Fetch the FULL job description from Reed's per-job detail API. The search
+    endpoint only returns a ~450-char snippet; this returns the whole thing. A
+    deterministic API call (same HTTP Basic key), NOT scraping. Returns stripped
+    text, or None on any failure / missing id (caller keeps the snippet)."""
+    job_id = (raw or {}).get("jobId")
+    key = key or os.environ.get("REED_API_KEY")
+    if not job_id or not key:
+        return None
+    try:
+        r = http.get(f"{DETAIL}/{job_id}", auth=(key, ""))
+        r.raise_for_status()
+        return strip_tags(r.json().get("jobDescription", "")) or None
+    except Exception:
+        return None
 
 
 def _parse_date(s: str | None) -> date | None:
@@ -56,6 +74,7 @@ def fetch(cfg: dict, http: httpx.Client) -> list[Job]:
                         url=url,
                         location=it.get("locationName", "") or "",
                         description=strip_tags(it.get("jobDescription", "")),
+                        jd_full=False,  # search returns a 452-char snippet; enrich via detail API
                         posted_at=_parse_date(it.get("date")),
                         salary_min=it.get("minimumSalary"),
                         salary_max=it.get("maximumSalary"),

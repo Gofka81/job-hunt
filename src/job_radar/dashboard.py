@@ -55,6 +55,8 @@ DASHBOARD_HTML = """<!doctype html>
   .back { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
   .mini { padding:4px 9px; min-height:30px; font-size:14px; line-height:1; flex:0 0 auto; }
   .mini:hover { border-color:var(--accent); }
+  .mini.dismiss { color:var(--muted); }
+  .mini.dismiss:hover { color:#ff6b6b; border-color:#ff6b6b; }
   #msg { color:var(--muted); font-size:13px; padding:6px 0; }
   .cfgbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
   #cfg, #rubric { width:100%; min-height:60vh; padding:12px; border-radius:8px;
@@ -68,6 +70,9 @@ DASHBOARD_HTML = """<!doctype html>
   .score.s-lo  { background:#3a1d1d; color:#ff9b9b; }
   .reason { color:#b9bdc7; font-size:13px; margin-top:7px; line-height:1.4;
             border-top:1px solid var(--line); padding-top:7px; }
+  .trk-sec { font-size:13px; font-weight:700; color:var(--muted); text-transform:uppercase;
+             letter-spacing:.05em; margin:14px 0 8px; }
+  .trk-acts { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
   table.usage { width:100%; border-collapse:collapse; font-size:13px; }
   table.usage th, table.usage td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
   table.usage th { color:var(--muted); font-weight:600; }
@@ -108,6 +113,7 @@ DASHBOARD_HTML = """<!doctype html>
   </span>
   <span id="nav">
     <button class="navbtn on" data-view="jobs">Jobs</button>
+    <button class="navbtn" data-view="tracker" title="Tracker — applied / saved">📌</button>
     <button class="navbtn" data-view="config" title="Config">⚙</button>
     <button class="navbtn" data-view="rubric" title="Triage rubric">📋</button>
     <button class="navbtn" data-view="usage" title="LLM token usage">📊</button>
@@ -132,6 +138,21 @@ DASHBOARD_HTML = """<!doctype html>
     </div>
     <div id="msg"></div>
     <div id="list"></div>
+  </div>
+
+  <div id="trackerView" style="display:none">
+    <div class="cfgbar">
+      <button class="back">← Jobs</button>
+      <button id="trkReload">Reload</button>
+      <span id="trkMsg" class="muted"></span>
+    </div>
+    <div id="trkChips" class="chips"></div>
+    <div id="trkBox"></div>
+    <div class="muted" style="font-size:12px;margin-top:6px;">
+      Your pipeline. Applied jobs move here out of the Jobs inbox; use the buttons to
+      change stage. Hidden (dismissed) jobs aren’t shown — pick “archived” in the Jobs
+      status filter to find them.
+    </div>
   </div>
 
   <div id="configView" style="display:none">
@@ -186,6 +207,7 @@ DASHBOARD_HTML = """<!doctype html>
     <div class="modal-actions">
       <button id="amApplied" class="primary">✅ Applied</button>
       <button id="amViewed">👀 Just viewed</button>
+      <button id="amArchive">🚫 Not interested (hide)</button>
       <button id="amDismiss" class="ghost">✕ Not now</button>
     </div>
   </div>
@@ -232,13 +254,18 @@ function viewJobs() {
   const st = $("#fstatus").value, loc = $("#floc").value, src = $("#fsource").value;
   const minSal = parseFloat($("#fsalary").value) || 0;
   const now = Date.now();
+  // Inbox = jobs still to review (status 'new'). Anything you've acted on — saved
+  // (viewed), applied, rejected — lives in the 📌 Tracker; archived is hidden.
+  const HIDE_INBOX = ["viewed", "applied", "rejected", "archived"];
   let v = JOBS.filter(j =>
-    (!st  || j.status === st) &&
+    // an explicit status filter shows exactly that; otherwise show only the inbox
+    (st ? j.status === st : !HIDE_INBOX.includes(j.status)) &&
     (!loc || (j.locations || []).includes(loc)) &&
     (!src || j.source === src) &&
     // min salary on salary_max; keep jobs with no salary data visible
     (!minSal || j.salary_max == null || j.salary_max >= minSal) &&
-    (SHOW_ALL || !j.first_seen || (now - new Date(j.first_seen).getTime()) <= RECENT_MS));
+    (st || SHOW_ALL || !j.first_seen ||
+     (now - new Date(j.first_seen).getTime()) <= RECENT_MS));
   const k = $("#sort").value;
   const recent = (a,b)=> (b.first_seen||"").localeCompare(a.first_seen||"");
   const by = { recent,
@@ -275,6 +302,8 @@ function render(list) {
            target="_blank" rel="noopener">${esc(j.title)}</a>
         <button class="mini" data-jid="${esc(j.job_id)}"
           title="${hasScore ? "Re-score" : "Score"} this job (1 Claude call)">✨</button>
+        <button class="mini dismiss" data-dismiss="${esc(j.job_id)}"
+          title="Not interested — hide this job">✕</button>
       </div>
       <div class="meta">
         <span>${esc(j.company)}</span>
@@ -313,14 +342,15 @@ async function load() {
 
 // --- views (jobs / config / rubric / usage) -------------------------------
 let VIEW = "jobs";
-const LOADERS = { jobs: load, config: loadConfig, rubric: loadRubric, usage: loadUsage };
+const LOADERS = { jobs: load, tracker: loadTracker, config: loadConfig, rubric: loadRubric, usage: loadUsage };
 function showView(v) {
   VIEW = v;
-  $("#jobsView").style.display   = v==="jobs"   ? "" : "none";
-  $("#configView").style.display = v==="config" ? "" : "none";
-  $("#rubricView").style.display = v==="rubric" ? "" : "none";
-  $("#usageView").style.display  = v==="usage"  ? "" : "none";
-  $("#jobsTools").style.display  = v==="jobs"   ? "" : "none";
+  $("#jobsView").style.display    = v==="jobs"    ? "" : "none";
+  $("#trackerView").style.display = v==="tracker" ? "" : "none";
+  $("#configView").style.display  = v==="config"  ? "" : "none";
+  $("#rubricView").style.display  = v==="rubric"  ? "" : "none";
+  $("#usageView").style.display   = v==="usage"   ? "" : "none";
+  $("#jobsTools").style.display   = v==="jobs"    ? "" : "none";
   document.querySelectorAll(".navbtn").forEach(b => b.classList.toggle("on", b.dataset.view===v));
 }
 function refreshView(){ (LOADERS[VIEW] || load)(); }
@@ -362,6 +392,55 @@ async function saveRubric() {
     $("#rubMsg").textContent = r.ok ? "✅ saved — used by the next ✨ Analyze run" : "❌ HTTP "+r.status;
   } catch(e){ if (e.message!=="auth") $("#rubMsg").textContent = "Error: "+e.message; }
 }
+
+// --- tracker view (pipeline by status) ---
+// Each stage's allowed moves. markStatus handles the transition; statuses are in
+// the server's SETTABLE_STATUSES allowlist.
+const STAGES = [
+  { key: "applied",  label: "✅ Applied",  moves: [["rejected","🚫 Rejected"], ["new","↩ Back to review"]] },
+  { key: "viewed",   label: "👀 Saved",    moves: [["applied","✅ Applied"], ["archived","✕ Hide"]] },
+  { key: "rejected", label: "🚫 Rejected", moves: [["new","↩ Back to review"]] },
+];
+function trackerCard(j, moves) {
+  const band = scoreBand(j.score);
+  const sc = j.score != null ? `<span class="score s-${band}">${Math.round(j.score)}</span> ` : "";
+  const btns = moves.map(([st, lbl]) =>
+    `<button class="mini" data-trk="${esc(j.job_id)}" data-st="${st}">${lbl}</button>`).join("");
+  return `<div class="job${band ? " sb-"+band : ""}">
+    <div class="jobhead">${sc}
+      <a class="joblink" data-jid="${esc(j.job_id)}" href="${esc(j.url)}"
+         target="_blank" rel="noopener">${esc(j.title)}</a></div>
+    <div class="meta"><span>${esc(j.company)}</span>
+      <span class="pill">${esc(primaryLoc(j))}${locExtra(j)}</span>
+      <span class="muted">${ago(j.first_seen)}</span></div>
+    <div class="trk-acts">${btns}</div>
+  </div>`;
+}
+async function loadTracker() {
+  if (!TOKEN) return showAuth("Enter your API token to view the tracker.");
+  $("#trkMsg").textContent = "loading…";
+  try {
+    JOBS = (await (await api("/api/jobs?limit=500")).json()).jobs || [];  // keep cache fresh
+    $("#trkChips").innerHTML = STAGES.map(s =>
+      `<div class="chip"><b>${JOBS.filter(j => j.status===s.key).length}</b>`
+      + `<span>${s.label.replace(/^\S+\s/, "")}</span></div>`).join("");
+    let html = "";
+    for (const s of STAGES) {
+      const items = JOBS.filter(j => j.status === s.key)
+        .sort((a,b) => (b.first_seen||"").localeCompare(a.first_seen||""));
+      if (!items.length) continue;
+      html += `<div class="trk-sec">${s.label} (${items.length})</div>`
+            + items.map(j => trackerCard(j, s.moves)).join("");
+    }
+    $("#trkBox").innerHTML = html ||
+      '<div class="muted">Nothing tracked yet — apply to a job, or hit 👀/✅ on the popup.</div>';
+    $("#trkMsg").textContent = "";
+  } catch(e){ if (e.message!=="auth") $("#trkMsg").textContent = "Error: "+e.message; }
+}
+$("#trkBox").onclick = (e) => {
+  const b = e.target.closest("button[data-trk]");
+  if (b) markStatus(b.dataset.trk, b.dataset.st);  // refreshView re-renders the tracker
+};
 
 // --- usage view ---
 function fmtTok(n){ n=n||0; return n>=1000 ? (n/1000).toFixed(1)+"k" : ""+n; }
@@ -436,6 +515,7 @@ document.querySelectorAll(".navbtn").forEach(b => b.onclick = () => { showView(b
 document.querySelectorAll(".back").forEach(b => b.onclick = () => { showView("jobs"); load(); });
 $("#save").onclick = () => { TOKEN = $("#token").value.trim(); localStorage.setItem("jr_token", TOKEN); refreshView(); };
 $("#refresh").onclick = refreshView;
+$("#trkReload").onclick = loadTracker;
 $("#cfgSave").onclick = saveConfig;
 $("#cfgReload").onclick = loadConfig;
 $("#rubSave").onclick = saveRubric;
@@ -473,10 +553,12 @@ function setPending(p) {  // persist so a same-tab navigation (mobile) survives 
   } catch(e){}
 })();
 $("#list").onclick = (e) => {
+  const d = e.target.closest("button.dismiss");
+  if (d && d.dataset.dismiss) { markStatus(d.dataset.dismiss, "archived"); return; }  // ✕ hide
   const b = e.target.closest("button.mini");
-  if (b && b.dataset.jid) { triage([b.dataset.jid]); return; }
+  if (b && b.dataset.jid) { triage([b.dataset.jid]); return; }                        // ✨ score
   const a = e.target.closest("a.joblink");
-  if (a && a.dataset.jid) {
+  if (a && a.dataset.jid) {  // opening a job → remember it so we can ask on return
     const j = JOBS.find(x => x.job_id === a.dataset.jid);
     if (j) setPending({ jid: j.job_id, co: j.company, ti: j.title });
     // don't preventDefault — let the link open
@@ -488,12 +570,15 @@ function showApplyModal() {
   $("#applyModal").style.display = "flex";
 }
 function closeApplyModal() { $("#applyModal").style.display = "none"; setPending(null); }
+const STATUS_MSG = { applied:"✅ Applied → see the 📌 Tracker", viewed:"👀 Saved to 📌 Tracker",
+  rejected:"🚫 Rejected", archived:"🚫 Hidden (pick ‘archived’ in the status filter to find it)",
+  new:"↩ Back in the review list" };
 async function markStatus(jid, status) {
   try {
     await api("/api/status", { method:"POST", headers:{ "content-type":"application/json" },
       body: JSON.stringify({ job_id: jid, status }) });
-    $("#msg").textContent = status === "applied" ? "✅ Marked as applied." : "👀 Marked as viewed.";
-    fetchJobs();  // refresh so the status pill updates
+    $("#msg").textContent = (STATUS_MSG[status] || "Updated") + ".";
+    refreshView();  // re-render the active view (Jobs inbox or Tracker)
   } catch(e){}
 }
 document.addEventListener("visibilitychange", () => {
@@ -502,6 +587,7 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("focus", showApplyModal);  // fallback for browsers that skip the above
 $("#amApplied").onclick = () => { const j = pendingApply; closeApplyModal(); if (j) markStatus(j.jid, "applied"); };
 $("#amViewed").onclick  = () => { const j = pendingApply; closeApplyModal(); if (j) markStatus(j.jid, "viewed"); };
+$("#amArchive").onclick = () => { const j = pendingApply; closeApplyModal(); if (j) markStatus(j.jid, "archived"); };
 $("#amDismiss").onclick = closeApplyModal;
 $("#applyModal").onclick = (e) => { if (e.target.id === "applyModal") closeApplyModal(); };  // tap backdrop
 
@@ -515,12 +601,6 @@ $("#analyze").onclick = () => {
       `Triage ${pending} new jobs? That's up to ${pending} Claude calls against your `
       + `Pro quota (capped by analysis.max_jobs). Use a card's ✨ for one at a time.`)) return;
   triage("all_pending");
-};
-// per-card ✨ button → triage just that one job (event delegation; re-scores even
-// if already triaged, since the server treats an explicit job_id list as force).
-$("#list").onclick = (e) => {
-  const b = e.target.closest("button.mini");
-  if (b && b.dataset.jid) triage([b.dataset.jid]);
 };
 load();
 </script>

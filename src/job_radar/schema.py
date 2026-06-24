@@ -35,6 +35,8 @@ class Job(BaseModel):
     url: str
     location: str = ""
     description: str = ""  # plain-text JD (for tech-stack search); not part of job_id
+    jd_full: bool = True   # False only if the source's search JD is a snippet a detail
+    #                        API can improve (Reed) — triggers scan-time enrichment
     posted_at: date | None = None
     salary_min: float | None = None
     salary_max: float | None = None

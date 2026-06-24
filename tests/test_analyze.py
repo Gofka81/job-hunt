@@ -47,6 +47,23 @@ def test_apply_analysis_unknown_job_returns_false(tmp_path):
     s.close()
 
 
+def test_jd_enrichment_flag_and_apply(tmp_path):
+    db = tmp_path / "j.duckdb"
+    s = Store(db)
+    s.upsert(Job(source="reed", company="A", title="DE", url="https://x/1",
+                 description="snip", jd_full=False, raw={"jobId": "9"}))
+    s.upsert(Job(source="greenhouse", company="B", title="DE", url="https://x/2",
+                 description="full jd", jd_full=True))
+    need = s.jobs_needing_full_jd()
+    assert len(need) == 1 and need[0]["source"] == "reed"   # only the Reed snippet
+    assert need[0]["raw"]["jobId"] == "9"                   # raw carries the detail id
+    jid = need[0]["job_id"]
+    assert s.apply_full_jd(jid, "the full jd text") is True
+    assert s.jobs_needing_full_jd() == []                   # flag flipped → never re-fetched
+    assert s.apply_full_jd("nope", "x") is False
+    s.close()
+
+
 def test_set_status_preserves_score_and_reason(tmp_path):
     db = tmp_path / "a.duckdb"
     jid = _seed(db, 1)[0]
