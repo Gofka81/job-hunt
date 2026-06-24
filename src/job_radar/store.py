@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     location         VARCHAR,               -- raw first-seen location string
     locations        JSON,                  -- set of canonical UK cities this posting lists
     description      VARCHAR,               -- plain-text JD (for tech-stack search)
+    jd_full          BOOLEAN DEFAULT TRUE,  -- false ONLY while a fuller JD is fetchable
+                                            -- (Reed snippet); true = best available, skip enrich
     posted_at        DATE,
     salary_min       DOUBLE,
     salary_max       DOUBLE,
@@ -149,12 +151,12 @@ class Store:
         self.con.execute(
             """INSERT INTO jobs
                (job_id, vacancy_key, source, company, title, url, location, locations,
-                description, posted_at, salary_min, salary_max, currency, remote, status,
+                description, jd_full, posted_at, salary_min, salary_max, currency, remote, status,
                 first_seen, last_seen, raw)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?, ?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'new', ?, ?, ?)""",
             [
                 make_job_id(vkey, now), vkey, job.source, job.company, job.title,
-                job.stored_url, job.location, json.dumps([city]), job.description,
+                job.stored_url, job.location, json.dumps([city]), job.description, job.jd_full,
                 job.posted_at, job.salary_min, job.salary_max, job.currency, job.remote,
                 now, now, json.dumps(job.raw, default=str),
             ],
@@ -211,6 +213,31 @@ class Store:
     # career-ops verdicts; pending_jobs() selects status='new', so writing status
     # here would drop scored jobs off the PC feed).
     ANALYZE_COLS = ("job_id", "company", "title", "location", "locations", "description")
+
+    # --- scan-time JD enrichment (Reed detail API) ------------------------
+    def jobs_needing_full_jd(self, limit: int = 500) -> list[dict]:
+        """Jobs whose stored JD is a snippet a detail API can improve — i.e.
+        jd_full = false. Only Reed sets that, so this returns Reed jobs needing a
+        detail fetch. Carries `raw` (the jobId lives there)."""
+        rows = self.con.execute(
+            """SELECT job_id, source, raw FROM jobs
+               WHERE jd_full IS FALSE ORDER BY first_seen DESC LIMIT ?""",
+            [limit],
+        ).fetchall()
+        return [
+            {"job_id": jid, "source": src, "raw": json.loads(raw) if raw else {}}
+            for jid, src, raw in rows
+        ]
+
+    def apply_full_jd(self, job_id: str, text: str) -> bool:
+        """Store the fetched full JD and mark jd_full=true so it's never re-fetched.
+        Returns False if the job_id is unknown."""
+        if not self.con.execute("SELECT 1 FROM jobs WHERE job_id = ?", [job_id]).fetchone():
+            return False
+        self.con.execute(
+            "UPDATE jobs SET description = ?, jd_full = TRUE WHERE job_id = ?", [text, job_id]
+        )
+        return True
 
     def jobs_for_analysis(
         self, job_ids: list[str] | None = None, *, only_untriaged: bool = True

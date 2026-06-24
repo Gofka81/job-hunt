@@ -63,6 +63,12 @@ priority_locations:
 # bots). 24h tolerates a missed scan or two before expiring.
 expire_after_hours: 24
 
+# After a scan, fetch the FULL JD for sources whose search response is only a
+# snippet but expose a detail API (currently Reed: 452-char snippet → full text).
+# Deterministic API call (not scraping); one-shot per job via the jd_full flag.
+# Adzuna stays a snippet (no full-JD API). Set false to disable.
+fetch_full_jd: true
+
 # --- Sources ---
 sources:
   adzuna:

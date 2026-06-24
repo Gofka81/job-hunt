@@ -9,6 +9,27 @@ from job_radar.sources import adzuna, oracle, reed, workday
 
 
 @respx.mock
+def test_reed_full_description_fetches_detail(monkeypatch):
+    monkeypatch.setenv("REED_API_KEY", "k")
+    respx.get("https://www.reed.co.uk/api/1.0/jobs/123").mock(
+        return_value=httpx.Response(200, json={"jobDescription": "<p>Full PySpark JD</p>"}))
+    with httpx.Client() as c:
+        assert reed.full_description({"jobId": "123"}, c) == "Full PySpark JD"  # tags stripped
+
+
+@respx.mock
+def test_reed_full_description_failure_returns_none(monkeypatch):
+    monkeypatch.setenv("REED_API_KEY", "k")
+    respx.get("https://www.reed.co.uk/api/1.0/jobs/9").mock(return_value=httpx.Response(500))
+    with httpx.Client() as c:
+        assert reed.full_description({"jobId": "9"}, c) is None  # error → keep the snippet
+
+
+def test_reed_full_description_no_id_returns_none():
+    assert reed.full_description({}, None) is None  # no jobId → None, no HTTP needed
+
+
+@respx.mock
 def test_adzuna_queries_each_location_with_exclude(monkeypatch):
     monkeypatch.setenv("ADZUNA_APP_ID", "id")
     monkeypatch.setenv("ADZUNA_APP_KEY", "key")
