@@ -1,4 +1,4 @@
-"""PC-side bridge to the Pi API. No DB here — the PC only talks HTTP.
+"""PC-side bridge to the server API. No DB here — the PC only talks HTTP.
 
   job-bridge pull   GET /api/pending  -> writes career-ops pipeline.md
   job-bridge push   reads results.tsv -> POST /api/results
@@ -7,7 +7,7 @@ results.tsv is a tab-separated file the PC produces after evaluation, keyed by
 the job URL (what career-ops works in):
     url<TAB>score<TAB>status<TAB>report_num
 (only url is required per row; blank cells are skipped). All rows go in one POST;
-the Pi applies each independently and skips any URL it doesn't recognise.
+the server applies each independently and skips any URL it doesn't recognise.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _parse_score(raw: str) -> float:
 
 def read_results(path: str | Path) -> list[dict]:
     """Read url-keyed verdicts. Each non-empty `url` row becomes one verdict;
-    all are sent in a single POST (the Pi applies them independently)."""
+    all are sent in a single POST (the server applies them independently)."""
     out: list[dict] = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f, delimiter="\t"):
@@ -112,7 +112,7 @@ def push(base_url: str, token: str, results_path: str | Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _load_env()
-    ap = argparse.ArgumentParser(prog="job-bridge", description="PC <-> Pi API bridge.")
+    ap = argparse.ArgumentParser(prog="job-bridge", description="PC <-> server API bridge.")
     ap.add_argument("--url", default=os.environ.get("JOB_RADAR_API_URL", ""))
     ap.add_argument("--token", default=os.environ.get("JOB_RADAR_API_TOKEN", ""))
     sub = ap.add_subparsers(dest="cmd", required=True)

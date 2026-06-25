@@ -63,6 +63,18 @@ priority_locations:
 # bots). 24h tolerates a missed scan or two before expiring.
 expire_after_hours: 24
 
+# --- Deep vs regular scans ---
+# A REGULAR scan (scheduled hourly + the "Scan now" button) only looks `recent_days`
+# back — cheaper, fresh-only, fewer API calls. A DEEP scan (the 🔭 button /
+# POST /api/scan?deep=1 / `job-scan --deep`) ignores this and pulls the full window
+# (e.g. Adzuna max_days_old=7) to load/refresh the whole week.
+#
+# Unset `recent_days` (the default) = regular scans use the full window too (no change).
+# To run light hourly + a manual weekly deep:  set recent_days: 1  AND raise
+# expire_after_hours to ~180 (≈7.5 days) so the deep-loaded week persists between deep
+# scans (a job not re-seen by the tight hourly scans would otherwise expire in 24h).
+# recent_days: 1
+
 # After a scan, fetch the FULL JD for sources whose search response is only a
 # snippet but expose a detail API (currently Reed: 452-char snippet → full text).
 # Deterministic API call (not scraping); one-shot per job via the jd_full flag.
@@ -133,8 +145,7 @@ sources:
     companies:
       # Verified working (returns the CXS JSON). Add your targets the same way —
       # host+site come from the careers URL https://{host}/{lang}/{site}.
-      - { host: "livenation.wd503.myworkdayjobs.com", site: "TMExternalSite", name: "Live Nation" }
-      # - { host: "natwest.wd3.myworkdayjobs.com", site: "NatWestGroup", name: "NatWest" }  ← verify
+      # - { host: "livenation.wd503.myworkdayjobs.com", site: "TMExternalSite", name: "Live Nation" } WORKING EXAMPLE
 
   # Oracle Cloud Recruiting (ORC) — self-hosted per tenant (banks: JPMorgan…).
   # site = the `siteNumber` from the careers URL
@@ -146,10 +157,10 @@ sources:
     max_pages: 2
     companies:
       # Verified working (returns the CE REST JSON).
-      - { host: "jpmc.fa.oraclecloud.com", site: "CX_1001", name: "JPMorgan" }
-      # - { host: "hdpc.fa.us2.oraclecloud.com", site: "LateralHiring", name: "..." }  ← verify
+      # - { host: "<test-company>.fa.<region if needed>.oraclecloud.com", site: "Site suffix", name: "Alias for company name" }
+      # - { host: "jpmc.fa.oraclecloud.com", site: "CX_1001", name: "JPMorgan" } WORKING EXAMPLE
 
-# --- On-Pi LLM triage (Stage 1) ---
+# --- On-server LLM triage (Stage 1) ---
 # Scores already-discovered jobs for fit from the stored JD (0-10). Discovery
 # stays deterministic — this is the only LLM step in this repo, and it only ranks
 # the pending list. Triggered from the dashboard/phone (POST /api/analyze); writes

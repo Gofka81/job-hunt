@@ -1,4 +1,4 @@
-"""On-Pi LLM triage (Stage 1) — the only LLM step that lives in this repo.
+"""On-server LLM triage (Stage 1) — the only LLM step that lives in this repo.
 
 Discovery stays deterministic (HTTP + SQL, zero tokens). This scores *already
 discovered* jobs for fit, cheaply, so the phone/dashboard can rank the pending
@@ -13,7 +13,7 @@ Deep career-ops evaluation (Stage 2) stays on the PC / is a later, separate conc
 
 Cost levers: Haiku + a prompt-cached rubric + triage-only-untriaged jobs keep a
 full run to pennies. The rubric (candidate profile + 0-10 scale) is personal and
-lives in `analysis/rubric.md` (gitignored, on the Pi volume; see config.load_rubric).
+lives in `analysis/rubric.md` (gitignored, on the server volume; see config.load_rubric).
 
 Token usage is recorded per run (Store.record_llm_run) and surfaced on the
 dashboard Usage view; a rate/billing limit ("out of budget") stops the run
@@ -129,7 +129,7 @@ class Triage(BaseModel):
 def _client():
     """Anthropic SDK client (lazy import so the module loads — and tests run —
     without the SDK installed; only an actual triage run needs it). Auth is
-    ANTHROPIC_API_KEY via env, same pattern as the other Pi secrets."""
+    ANTHROPIC_API_KEY via env, same pattern as the other server secrets."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY not set — required for LLM triage")
     import anthropic

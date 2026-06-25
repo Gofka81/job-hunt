@@ -1,8 +1,8 @@
 # Triage rubric (example) — copy to analysis/rubric.md and personalise
 
-This is the candidate profile the on-Pi LLM triage scores jobs against (0-10).
+This is the candidate profile the on-server LLM triage scores jobs against (0-10).
 It is personal (skills, comp, right-to-work), so the real `analysis/rubric.md`
-is gitignored and lives on the Pi volume; this `.example.md` is the baked fallback
+is gitignored and lives on the server volume; this `.example.md` is the baked fallback
 `load_rubric()` returns until one is saved. Edit the real one from the phone via
 `POST /api/rubric` (no redeploy) or directly on the volume.
 

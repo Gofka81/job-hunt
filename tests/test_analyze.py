@@ -79,6 +79,18 @@ def test_set_status_preserves_score_and_reason(tmp_path):
     s.close()
 
 
+def test_archived_job_is_never_analyzed(tmp_path):
+    """Hidden (dismissed) jobs must never be triaged — the worker only ever selects
+    status='new', so archived is structurally excluded from every path."""
+    db = tmp_path / "a.duckdb"
+    jid = _seed(db, 1)[0]
+    s = Store(db)
+    s.set_status(jid, "archived")
+    assert s.jobs_for_analysis() == []                          # batch path
+    assert s.jobs_for_analysis([jid], only_untriaged=False) == []  # explicit per-card target
+    s.close()
+
+
 def test_jobs_for_analysis_skips_already_triaged(tmp_path):
     db = tmp_path / "a.duckdb"
     ids = _seed(db, 2)

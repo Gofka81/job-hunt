@@ -133,13 +133,29 @@ def test_scan_now_triggers_run(client, monkeypatch):
     monkeypatch.setattr(srv, "run_scan", lambda cfg, db, **k: calls.append(db) or {"totals": {"found": 1}})
     c, _ = client
     r = c.post("/api/scan")
-    assert r.status_code == 202 and r.json() == {"started": True}
+    assert r.status_code == 202 and r.json() == {"started": True, "deep": False}
     for _ in range(100):  # wait for the background thread
         if calls:
             break
         time.sleep(0.02)
     assert calls, "run_scan was not invoked"
     assert c.get("/api/scan").json()["last"]["totals"]["found"] == 1
+
+
+def test_scan_deep_param_threads_through(client, monkeypatch):
+    import time
+    import job_radar.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "run_scan", lambda cfg, db, **k: calls.append(k) or {})
+    c, _ = client
+    r = c.post("/api/scan?deep=1")
+    assert r.status_code == 202 and r.json().get("deep") is True
+    for _ in range(100):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls and calls[0].get("deep") is True  # deep flag reached run_scan
 
 
 def test_scan_409_when_already_running(client):

@@ -1,6 +1,6 @@
 name: job-radar
 
-# Pi deployment via Portainer GitOps: point a stack at the PUBLIC repo, redeploy
+# server deployment via Portainer GitOps: point a stack at the PUBLIC repo, redeploy
 # on push. Single service — the FastAPI server, which serves the dashboard/API
 # AND owns scanning (APScheduler on SCAN_HOURS + on-demand POST /api/scan). It is
 # the sole DB writer.

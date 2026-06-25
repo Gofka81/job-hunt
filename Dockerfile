@@ -1,4 +1,4 @@
-# job-hunt — Pi image (arm64 Raspberry Pi 64-bit OS, also amd64). One process:
+# job-hunt — server image (Linux host (arm64 or amd64)). One process:
 # the FastAPI server, which also owns scheduling (APScheduler) + on-demand scans.
 FROM python:3.11-slim
 

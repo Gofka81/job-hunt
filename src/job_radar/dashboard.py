@@ -109,6 +109,7 @@ DASHBOARD_HTML = """<!doctype html>
       <option value="location">Location</option>
     </select>
     <button id="scan">Scan now</button>
+    <button id="deepscan" title="Full scan — pull the whole window (initial / daily full load)">🔭 Deep</button>
     <button id="analyze" title="LLM triage of pending jobs">✨ Analyze</button>
   </span>
   <span id="nav">
@@ -165,7 +166,7 @@ DASHBOARD_HTML = """<!doctype html>
     <textarea id="cfg" spellcheck="false" autocapitalize="off" autocomplete="off"
               placeholder="Loading config…"></textarea>
     <div class="muted" style="font-size:12px;margin-top:6px;">
-      Edits save to the Pi’s config.yml — the next scan picks them up (no redeploy).
+      Edits save to the server’s config.yml — the next scan picks them up (no redeploy).
     </div>
   </div>
 
@@ -302,8 +303,9 @@ function render(list) {
            target="_blank" rel="noopener">${esc(j.title)}</a>
         <button class="mini" data-jid="${esc(j.job_id)}"
           title="${hasScore ? "Re-score" : "Score"} this job (1 Claude call)">✨</button>
-        <button class="mini dismiss" data-dismiss="${esc(j.job_id)}"
-          title="Not interested — hide this job">✕</button>
+        ${j.status === "archived"
+          ? `<button class="mini" data-restore="${esc(j.job_id)}" title="Restore to review">↩</button>`
+          : `<button class="mini dismiss" data-dismiss="${esc(j.job_id)}" title="Not interested — hide">✕</button>`}
       </div>
       <div class="meta">
         <span>${esc(j.company)}</span>
@@ -535,6 +537,13 @@ $("#scan").onclick = async () => {
     $("#msg").textContent = r.status===409 ? "A scan is already running…" : "Scan started — refresh in a bit.";
   } catch(e){}
 };
+$("#deepscan").onclick = async () => {
+  try {
+    const r = await api("/api/scan?deep=1", { method:"POST" });
+    $("#msg").textContent = r.status===409 ? "A scan is already running…"
+      : "🔭 Deep scan started — pulling the full window. Refresh in a bit.";
+  } catch(e){}
+};
 // --- apply tracking -------------------------------------------------------
 // When a job link is opened, remember it; when the user returns to this tab,
 // ask whether they applied. Works on PC (new tab) and mobile (app switch) via
@@ -553,6 +562,8 @@ function setPending(p) {  // persist so a same-tab navigation (mobile) survives 
   } catch(e){}
 })();
 $("#list").onclick = (e) => {
+  const r = e.target.closest("button[data-restore]");
+  if (r) { markStatus(r.dataset.restore, "new"); return; }                            // ↩ unarchive
   const d = e.target.closest("button.dismiss");
   if (d && d.dataset.dismiss) { markStatus(d.dataset.dismiss, "archived"); return; }  // ✕ hide
   const b = e.target.closest("button.mini");

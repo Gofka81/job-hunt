@@ -1,4 +1,4 @@
-# On-Pi LLM analysis (two-tier) — design & roadmap
+# On-server LLM analysis (two-tier) — design & roadmap
 
 > Status: **Stage 1 (triage) BUILT** and tested. **Stage 2 (deep) planned.** Discovery is untouched
 > and stays deterministic (HTTP + SQL, zero LLM) — this only adds an *evaluation* path and revises
@@ -6,7 +6,7 @@
 
 ## Context — why this exists
 
-Discovery runs unattended on the Pi (deterministic, zero LLM). The **LLM evaluation** (job-fit
+Discovery runs unattended on the server (deterministic, zero LLM). The **LLM evaluation** (job-fit
 scoring) historically only ran on the user's **PC** via career-ops. So you couldn't glance at your
 phone, see a fresh shortlist, and get a fit read without going to the PC.
 
@@ -23,7 +23,7 @@ revises the *deployment choice* of "evaluation runs on the PC", which is legitim
 | Scores against | **`analysis/rubric.md`** (distilled policy) | **CV data + full career-ops profile** |
 | Needs the CV? | **No** — the rubric is the distilled proxy | **Yes** — full `cv.md` |
 | Engine | Anthropic **SDK + Haiku** (direct Messages API) | career-ops slash command (tools) |
-| Runs on | **Pi** (always-on, phone-triggered) | **PC** (logged-in Claude); Pi mount later |
+| Runs on | **server** (always-on, phone-triggered) | **PC** (logged-in Claude); server mount later |
 | CV upkeep | n/a | **Manual** (`cv.md`, like career-ops today) |
 | Status | ✅ **Built** | ⏳ Phase 2 |
 
@@ -37,7 +37,7 @@ source material).
    The user has **no Anthropic API credit**, so triage must run on the **Claude Pro subscription**,
    which is only reachable via Claude Code headless (`claude -p` + `CLAUDE_CODE_OAUTH_TOKEN`) — the
    metered API cannot use a Pro plan. So the default engine is `claude-cli`: $0 real, spends Pro
-   *quota* (calls), needs Node + the `claude` CLI in the Pi image (see Runtime & auth below).
+   *quota* (calls), needs Node + the `claude` CLI in the server image (see Runtime & auth below).
    - **`engine: api`** (Anthropic SDK + `ANTHROPIC_API_KEY`, pay-per-token, ~$0.28/100-job run) stays
      in the code as a **dormant, opt-in** alternative — pure Python, no Node — for anyone who has API
      credit. It is never the default and never exercised in tests.
@@ -48,7 +48,7 @@ source material).
 
 2. **Rubric = its own file `analysis/rubric.md`, distilled from career-ops `modes/_profile.md`.**
    Not config.yml (a multi-line markdown rubric in YAML is awkward) and **not the DB** (the DB is
-   wiped on deploy — the rubric must survive). Gitignored + on the Pi volume (`JOB_RADAR_RUBRIC`),
+   wiped on deploy — the rubric must survive). Gitignored + on the server volume (`JOB_RADAR_RUBRIC`),
    with baked `analysis/rubric.example.md` fallback (same pattern as `config.yml`). Editable from the
    phone via `GET/POST /api/rubric` — no redeploy. career-ops landed on the same shape (hand-owned
    `_profile.md`, "never auto-updated"), which validates this. **No auto CV→rubric pipeline:** the
@@ -107,7 +107,7 @@ only-untriaged jobs, `max_jobs`-capped, single-flight, out-of-budget aware. A ni
 the day's new finds, so daytime quota is preserved. (Optionally config-driven instead of env, so it's
 tunable from the phone — at the cost of needing a restart to pick up a changed schedule, like scans.)
 
-## Runtime & auth on the Pi (claude-cli engine)
+## Runtime & auth on the server (claude-cli engine)
 
 The `claude-cli` engine needs Claude Code **in the container** and authenticated to your Pro plan:
 
@@ -119,9 +119,9 @@ The `claude-cli` engine needs Claude Code **in the container** and authenticated
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
    ```
-2. **Auth (headless, no interactive login on the Pi):** on a machine where you *are* logged in
+2. **Auth (headless, no interactive login on the server):** on a machine where you *are* logged in
    (your Mac), run **`claude setup-token`** — it authorises against your Anthropic account (Pro) and
-   prints a long-lived OAuth token (`sk-ant-oat01-…`). Put it on the Pi as the Portainer stack env var
+   prints a long-lived OAuth token (`sk-ant-oat01-…`). Put it on the server as the Portainer stack env var
    **`CLAUDE_CODE_OAUTH_TOKEN`** (same secrets pattern as `ADZUNA_*` etc.). Do **not** use `--bare`
    (it skips OAuth and forces an API key). The token can eventually expire → re-run `claude setup-token`.
 3. **Config:** `analysis.engine: claude-cli` (the default). No `ANTHROPIC_API_KEY` needed.
@@ -175,7 +175,7 @@ Also done: pluggable `claude-cli`/`api` engine (default `claude-cli`); usage led
 distilled from career-ops `_profile.md`. Verified end-to-end on the Pro sub locally (9/3/2 on a
 strong/weak/too-senior sample).
 
-Remaining to deploy Stage 1 on the Pi:
+Remaining to deploy Stage 1 on the server:
 1. **Dockerfile** — add Node + `@anthropic-ai/claude-code` (see Runtime & auth above).
 2. **Auth** — `claude setup-token` on a logged-in machine → `CLAUDE_CODE_OAUTH_TOKEN` Portainer var.
 3. **(optional) nightly schedule** — `ANALYZE_HOURS` env + APScheduler job (see Scheduling & quota).
@@ -194,11 +194,11 @@ Remaining to deploy Stage 1 on the Pi:
 
 On-demand full evaluation for a chosen `job_id`, reusing career-ops rather than reimplementing it.
 
-- **Engine = career-ops headless.** Mount the career-ops repo read-only on the Pi (`/app/career-ops`)
+- **Engine = career-ops headless.** Mount the career-ops repo read-only on the server (`/app/career-ops`)
   so the CV/profile stay private + manually updatable, and invoke `claude -p "/career-ops evaluate …"`
   with `--add-dir`, constrained tools. **This is where Claude Code + Node + a (sidecar) container +
   `CLAUDE_CODE_OAUTH_TOKEN` belong** — isolated to the rare, on-demand path, not the always-on server.
-  Default to the **"cut" report** on the Pi (tool-less / WebSearch-only); the fully-tooled report
+  Default to the **"cut" report** on the server (tool-less / WebSearch-only); the fully-tooled report
   stays a PC job.
 - **CV stays manual.** `cv.md` + `config/profile.yml` are the hand-owned source of truth — no
   auto-generation. Stage 2 reads them; it does not write them.

@@ -33,19 +33,27 @@ def run_scan(
     *,
     only_source: str | None = None,
     dry_run: bool = False,
+    deep: bool = False,
     log=None,
 ) -> dict:
     """Run the discovery scan once and return a summary. Shared by the CLI and
     the server's /api/scan. The DB is opened/closed per source so the write lock
     is held only during the quick upsert bursts, not during slow HTTP fetches —
-    keeping the dashboard responsive while a scan runs."""
+    keeping the dashboard responsive while a scan runs.
+
+    `deep`=True pulls the full configured window (e.g. Adzuna max_days_old=7) and
+    re-confirms every open job. A regular scan (deep=False) tightens that window to
+    `recent_days` (if set in config) — cheaper, fresh-only. Run a deep scan at least
+    daily so older-but-open jobs keep being re-seen and don't expire prematurely."""
     if log is None:
         log = logger.info
-    log("scan started")
+    log("deep scan started" if deep else "scan started")
     title_ok = build_title_filter(cfg.get("title_filter", {}))
     loc_ok = build_location_filter(cfg.get("location_filter"))
     set_priority(cfg.get("priority_locations") or [])  # priority cities for city ordering
     sources_cfg = cfg.get("sources", {})
+    # Regular scans look only `recent_days` back (opt-in; None = full window like deep).
+    recent_days = None if deep else cfg.get("recent_days")
 
     expire_hours = int(cfg.get("expire_after_hours", 24))
     if not dry_run:
@@ -65,6 +73,12 @@ def run_scan(
             continue
         if only_source and sid != only_source:
             continue
+
+        # Regular scans tighten the freshness window (fewer results + fewer API
+        # calls, since empty pages break the loop earlier). Only affects sources
+        # with a max_days_old knob (Adzuna). Deep scans use the full window.
+        if recent_days and "max_days_old" in scfg:
+            scfg = {**scfg, "max_days_old": min(int(scfg["max_days_old"]), int(recent_days))}
 
         run_id = uuid.uuid4().hex[:12]
         src_started = datetime.now(timezone.utc)
@@ -173,12 +187,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", default=str(ROOT / "data" / "jobs.duckdb"), help="DuckDB path")
     ap.add_argument("--source", default=None, help="run a single source by id")
     ap.add_argument("--dry-run", action="store_true", help="fetch + filter, write nothing")
+    ap.add_argument("--deep", action="store_true",
+                    help="full window (ignore recent_days) — full/initial load")
     args = ap.parse_args(argv)
 
     setup_logging()
     _load_env()
     cfg = load_config(args.config)
-    result = run_scan(cfg, args.db, only_source=args.source, dry_run=args.dry_run)
+    result = run_scan(cfg, args.db, only_source=args.source, dry_run=args.dry_run, deep=args.deep)
 
     t = result["totals"]
     bar = "━" * 45

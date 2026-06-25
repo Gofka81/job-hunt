@@ -5,7 +5,7 @@ import respx
 
 from job_radar import bridge
 
-BASE = "https://pi.example.com"
+BASE = "https://server.example.com"
 TOKEN = "secret"
 
 
