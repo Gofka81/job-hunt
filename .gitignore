@@ -227,3 +227,5 @@ data/*.duckdb.wal
 .venv/
 
 CLAUDE.md
+# internal design docs — not for the public repo
+docs/
