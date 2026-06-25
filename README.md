@@ -5,14 +5,18 @@ but it owns the half career-ops is weak at: **discovery**.
 
 ## The idea
 
-Two halves of a job search, split by what each one *should* cost:
+A job search split into tiers by what each one *should* cost:
 
-- **Discovery** (find jobs, filter, dedup) — pure HTTP + SQL. **Zero LLM tokens.** This repo.
-- **Evaluation** (score fit, tailor CV, draft answers) — legitimate LLM work. Delegated to career-ops.
+- **Discovery** (find jobs, filter, dedup) — pure HTTP + SQL. **Zero LLM tokens.** The core of this repo.
+- **Triage** (a quick 0–10 fit score per role) — a cheap, bounded, *optional* on-server LLM pass so you
+  can rank the shortlist from your phone. Runs on your Claude **Pro subscription** via Claude Code
+  headless (no per-token cost), or the metered API. Clearly separated from discovery.
+- **Deep evaluation** (full report, tailor CV, draft answers) — heavier LLM work, delegated to
+  [career-ops](https://github.com/santifer/career-ops) on your PC under human review.
 
-`job-hunt` scans UK job sources on a schedule, filters to roles that match, dedups against history,
-and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then does the LLM evaluation —
-**only on the handful of jobs that survive filtering, never the raw firehose.**
+`job-hunt` scans UK sources on a schedule, filters + dedups, **triages the survivors** for fit, and feeds
+the best into career-ops — **LLM cost only on jobs that survive filtering, never the raw firehose.** The
+locked principle holds: **discovery is deterministic; triage is bounded and opt-in; deep eval is supervised.**
 
 ## Features
 
@@ -25,6 +29,11 @@ and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then doe
 - **Server-side narrowing** — Adzuna `category=it-jobs`, full-text `what_exclude`, and a tight
   `max_days_old` window keep the result budget focused (and under the API's daily call limit).
 - **Title + location filters** — case-insensitive include/exclude lists, kept broad (all UK + remote).
+- **Deep vs regular scans** — a 🔭 deep scan pulls the full window (initial / weekly full load); regular
+  scheduled scans use a tighter `recent_days` window — cheaper, fresh-only.
+- **Full-JD enrichment** — aggregator search APIs return a ~450-char snippet; for sources with a detail
+  API (Reed) the full JD is fetched once after filter+merge (a `jd_full` flag → fetched exactly once) and
+  stored back, so triage and search work on the real text, not a snippet.
 
 **Dedup & lifecycle**
 - **Write-time dedup** — identity is `vacancy_key = sha1(company | title)`, source- and city-agnostic:
@@ -36,14 +45,25 @@ and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then doe
   fresh row (a new evaluation), while the old one is kept as history.
 - **Single DB writer** — one process owns DuckDB (scheduled + on-demand scans + API), no lock fights.
 
+**Triage (optional on-server LLM — bounded, opt-in)**
+- **0–10 fit scoring** — scores each pending job against a personal rubric (`analysis/rubric.md`, gitignored)
+  from the stored JD, with a one-line reason. Triggered from the dashboard/phone, never automatically.
+- **Pluggable engine** — `claude-cli` (Claude Code on your Pro subscription, no per-token cost — the default)
+  or `api` (metered Anthropic SDK). Same rubric, forced-JSON output, usage ledger.
+- **Guardrails** — manual-trigger only, `max_jobs` cap per run, single-flight lock, hidden jobs never scored,
+  and a clean stop + alert when a usage/rate limit is hit. A usage view shows calls / tokens per run.
+
 **Dashboard & notifications**
-- **Phone-friendly web dashboard** (`GET /`) — funnel chips, job list, and filters by status, location,
-  source, and min-salary, defaulting to the last 48h with a show-all toggle.
-- **Full-text / tech-stack search** — searches the job description server-side, so terms like *spark* or
-  *airflow* are found even when they're not in the title.
-- **In-dashboard config editor** — edit `config.yml` from your phone; validated and applied on next scan,
-  no redeploy.
-- **Telegram bot** — push notifications on new matches, plus `/jobs` (paginated), `/funnel`, `/scan`.
+- **Phone-friendly web dashboard** (`GET /`) — funnel chips, score-ranked job list (colour-coded badges),
+  filters (status / location / source / min-salary), and server-side full-text **JD search** (find *spark*,
+  *airflow* even when not in the title).
+- **Application tracking** — open a job, and on return a popup asks *Applied / Viewed / Not interested*; a
+  **📌 Tracker** tab holds your pipeline (Applied / Rejected) with stage moves. Dismissed jobs hide; applied
+  jobs leave the inbox but are never lost.
+- **Editors over the wire** — edit `config.yml` and the triage `rubric.md` from your phone (`/api/config`,
+  `/api/rubric`); validated, applied on the next scan/run, no redeploy.
+- **Telegram bot** — push notifications on new matches, plus rich score cards: `/jobs [search]`, `/top`,
+  `/analyze` (run triage), `/funnel`, `/scan`, with inline buttons.
 
 **Sync & ops**
 - **HTTP API** to career-ops — `GET /api/pending` (shortlist out) / `POST /api/results` (verdicts back),
@@ -92,9 +112,14 @@ docker compose up -d --build          # single service; reads secrets from the e
 ```
 
 On the server this is a **Portainer GitOps** stack pointed at this repo: secrets are Portainer stack
-env vars (`ADZUNA_*`, `REED_API_KEY`, `JOB_RADAR_API_TOKEN`, `SCAN_HOURS`, `TZ`) and `config.yml` is
-edited through `POST /api/config` (stored on the data volume, never in git). Point your own
-cloudflared tunnel at the published port. See `docs/PLAN.md` for the full architecture.
+env vars (`ADZUNA_*`, `REED_API_KEY`, `JOB_RADAR_API_TOKEN`, `SCAN_HOURS`, `TZ`, optional
+`TELEGRAM_*`) and `config.yml` / `rubric.md` are edited through the API (stored on the data volume,
+never in git). Point your own cloudflared tunnel at the published port.
+
+**Triage auth (optional):** the image also bundles Node + the Claude Code CLI. To run on-server triage
+on your Pro subscription, mint a token once with `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`
+as a stack env var (or set `ANTHROPIC_API_KEY` and `analysis.engine: api` for the metered path). Leave
+both unset to run discovery-only.
 
 ## Sources
 
