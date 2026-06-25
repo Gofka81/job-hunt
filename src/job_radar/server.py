@@ -1,12 +1,12 @@
-"""Pi-side HTTP API + dashboard. Exposed remotely via a Cloudflare Tunnel
+"""server-side HTTP API + dashboard. Exposed remotely via a Cloudflare Tunnel
 (cloudflared), so every data endpoint requires a bearer token.
 
 Contract with the PC (career-ops bridge):
   GET  /api/pending  -> {"jobs": [...]}    the shortlist to evaluate
-  POST /api/results  <- {"results": [...]} verdicts; Pi applies them to DuckDB
+  POST /api/results  <- {"results": [...]} verdicts; server applies them to DuckDB
 
 Run:  uvicorn job_radar.server:app   (or `job-serve`)
-The Pi is the only writer of the DB; the PC only reads pending + posts verdicts.
+The server is the only writer of the DB; the PC only reads pending + posts verdicts.
 """
 
 from __future__ import annotations
@@ -47,15 +47,15 @@ _analyze_status: dict = {"running": False, "last": None}
 _WEBHOOK: dict = {"secret": None}
 
 
-def _guarded_scan(db: str) -> None:
+def _guarded_scan(db: str, deep: bool = False) -> None:
     """Run one scan unless one is already in progress (then no-op). Used by the
-    API trigger, the scheduler, and the /scan Telegram command. Pushes a Telegram
-    notification with the new matches when done."""
+    API trigger, the scheduler, and the /scan Telegram command. `deep` pulls the
+    full window (initial/daily full load). Pushes a Telegram notification when done."""
     if not _scan_lock.acquire(blocking=False):
         return
     _scan_status["running"] = True
     try:
-        result = run_scan(load_config(), db)
+        result = run_scan(load_config(), db, deep=deep)
         _scan_status["last"] = result
         try:
             notify.notify_new_jobs(result)
@@ -120,7 +120,7 @@ class AnalyzePayload(BaseModel):
 
 
 class Verdict(BaseModel):
-    # Key by url (preferred) or job_id; the Pi resolves url -> job_id.
+    # Key by url (preferred) or job_id; the server resolves url -> job_id.
     url: str | None = None
     job_id: str | None = None
     score: float | None = None
@@ -251,13 +251,14 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return {"saved": True}
 
     @app.post("/api/scan", status_code=202)
-    def scan_now(_: None = Depends(require_token)) -> dict:
-        """Trigger a scan on demand (the dashboard 'Scan now' button). Returns
-        immediately; the scan runs in the background. 409 if one's already going."""
+    def scan_now(deep: bool = False, _: None = Depends(require_token)) -> dict:
+        """Trigger a scan on demand (the dashboard 'Scan now' button). `deep=1`
+        pulls the full window (initial/full load). Returns immediately; runs in the
+        background. 409 if one's already going."""
         if _scan_lock.locked():
             raise HTTPException(409, "a scan is already running")
-        threading.Thread(target=_guarded_scan, args=(db,), daemon=True).start()
-        return {"started": True}
+        threading.Thread(target=_guarded_scan, args=(db, deep), daemon=True).start()
+        return {"started": True, "deep": deep}
 
     @app.get("/api/scan")
     def scan_status(_: None = Depends(require_token)) -> dict:
@@ -268,7 +269,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def analyze_now(
         payload: AnalyzePayload, _: None = Depends(require_token)
     ) -> dict:
-        """Trigger on-Pi LLM triage of pending jobs (the dashboard 'Analyze'
+        """Trigger on-server LLM triage of pending jobs (the dashboard 'Analyze'
         button). Returns immediately; runs in the background. 409 if one's already
         going. `target`: 'all_pending' (default) or a list of job_ids."""
         if payload.mode != "triage":
@@ -336,7 +337,18 @@ def _start_scheduler(db: str) -> None:
 
     hours = os.environ.get("SCAN_HOURS", "7-19/2")
     sched = BackgroundScheduler()
-    sched.add_job(lambda: _guarded_scan(db), CronTrigger(hour=hours, minute=0))
+    sched.add_job(lambda: _guarded_scan(db, deep=False), CronTrigger(hour=hours, minute=0))
+    # Deep scan is MANUAL by default (the 🔭 button / POST /api/scan?deep=1) — run it
+    # once to load the week, then occasionally (e.g. weekly) to refresh. This optional
+    # cron is OFF unless DEEP_SCAN_HOURS is set; if you do set it, prefer a single hour
+    # (e.g. "8") rather than something frequent — a deep scan is a backlog pull, not the
+    # hourly job. DEEP_SCAN_DOW (cron day-of-week, e.g. "mon") narrows it to weekly.
+    deep_hours = os.environ.get("DEEP_SCAN_HOURS")
+    if deep_hours:
+        dow = os.environ.get("DEEP_SCAN_DOW", "*")  # default every day; set e.g. "mon" for weekly
+        sched.add_job(lambda: _guarded_scan(db, deep=True),
+                      CronTrigger(day_of_week=dow, hour=deep_hours, minute=30))
+        logger.info("deep scan scheduled — dow=%s hour=%s", dow, deep_hours)
     sched.start()
     logger.info("scheduler started — scans at hour=%s (TZ=%s)", hours, os.environ.get("TZ", "local"))
 

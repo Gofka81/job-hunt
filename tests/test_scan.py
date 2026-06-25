@@ -63,6 +63,28 @@ def test_run_scan_enriches_reed_jd_once(tmp_path, monkeypatch):
     assert res2["totals"]["enriched"] == 0                 # not re-fetched
 
 
+class _CaptureCfg:
+    """Records the per-source cfg it was handed (to assert the freshness window)."""
+
+    ID = "adz"
+    last = {}
+
+    @staticmethod
+    def fetch(cfg, http):
+        _CaptureCfg.last = dict(cfg)
+        return []
+
+
+def test_regular_scan_tightens_window_deep_uses_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(scan, "REGISTRY", {"adz": _CaptureCfg})
+    cfg = {"recent_days": 1, "sources": {"adz": {"enabled": True, "max_days_old": 7}}}
+    db = str(tmp_path / "db.duckdb")
+    scan.run_scan(cfg, db, deep=False)
+    assert _CaptureCfg.last["max_days_old"] == 1   # regular → tightened to recent_days
+    scan.run_scan(cfg, db, deep=True)
+    assert _CaptureCfg.last["max_days_old"] == 7   # deep → full configured window
+
+
 def test_run_scan_dry_run_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(scan, "REGISTRY", {"fake": _FakeSource})
     db = tmp_path / "db.duckdb"

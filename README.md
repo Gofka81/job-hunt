@@ -47,7 +47,7 @@ and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then doe
 
 **Sync & ops**
 - **HTTP API** to career-ops — `GET /api/pending` (shortlist out) / `POST /api/results` (verdicts back),
-  bearer-token, over a Cloudflare Tunnel. The PC `job-bridge` pulls/pushes; the Pi's DuckDB stays the
+  bearer-token, over a Cloudflare Tunnel. The PC `job-bridge` pulls/pushes; the server's DuckDB stays the
   single source of truth.
 - **Config over the wire** — `GET/POST /api/config`, stored on the data volume, never in git.
 - **Deployed via Portainer GitOps** from this public repo; secrets are stack env vars.
@@ -55,7 +55,7 @@ and writes a shortlist into career-ops's `data/pipeline.md`. career-ops then doe
 ## Deployment shape
 
 ```
-Raspberry Pi — one container (always-on, zero tokens)   Your PC (on-demand, supervised)
+Server — one container (always-on, zero tokens)   Your PC (on-demand, supervised)
   FastAPI server (job-serve):                             job-bridge pull  → pipeline.md
    • APScheduler → scan every 2h (07–19)                  claude → /career-ops pipeline
    • POST /api/scan  (on-demand "Scan now")               evaluate · tailor CV · PDF
@@ -67,10 +67,10 @@ Raspberry Pi — one container (always-on, zero tokens)   Your PC (on-demand, su
 
 One process owns the database — it serves the API/dashboard **and** runs both the scheduled and
 on-demand scans, so there's a single DB writer and no lock fights. The PC only reads the shortlist
-and posts back verdicts; the Pi's DuckDB is the single source of truth. No shared git repo.
+and posts back verdicts; the server's DuckDB is the single source of truth. No shared git repo.
 
 Evaluation needs a logged-in Claude and human review, so it stays on your PC. Discovery needs neither,
-so it runs unattended on the Pi. Deployed via **Portainer GitOps** from this public repo; secrets are
+so it runs unattended on the server. Deployed via **Portainer GitOps** from this public repo; secrets are
 Portainer stack env vars and `config.yml` is edited through `/api/config` — neither lives in git.
 
 ## Quick start (local)
@@ -85,13 +85,13 @@ uv run job-scan                       # real scan into data/jobs.duckdb
 uv run job-serve                      # serve API + dashboard, schedule + on-demand scans
 ```
 
-## Deploy (Raspberry Pi, Docker)
+## Deploy (server, Docker)
 
 ```bash
 docker compose up -d --build          # single service; reads secrets from the environment
 ```
 
-On the Pi this is a **Portainer GitOps** stack pointed at this repo: secrets are Portainer stack
+On the server this is a **Portainer GitOps** stack pointed at this repo: secrets are Portainer stack
 env vars (`ADZUNA_*`, `REED_API_KEY`, `JOB_RADAR_API_TOKEN`, `SCAN_HOURS`, `TZ`) and `config.yml` is
 edited through `POST /api/config` (stored on the data volume, never in git). Point your own
 cloudflared tunnel at the published port. See `docs/PLAN.md` for the full architecture.

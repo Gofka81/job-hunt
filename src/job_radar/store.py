@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status           VARCHAR DEFAULT 'new',
     score            DOUBLE,                -- 0-10 fit score (LLM triage OR career-ops verdict)
     report_num       INTEGER,
-    eval_reason      VARCHAR,               -- one-line triage rationale (on-Pi LLM analysis)
+    eval_reason      VARCHAR,               -- one-line triage rationale (on-server LLM analysis)
     evaluated_at     TIMESTAMP,             -- when triage last scored this row
     engine           VARCHAR,               -- model/engine that produced score+reason
     first_seen       TIMESTAMP,
@@ -163,10 +163,10 @@ class Store:
         )
         return True
 
-    # --- API sync (Pi <-> PC) ---------------------------------------------
+    # --- API sync (server <-> PC) ---------------------------------------------
     # A job is "pending" (needs evaluation) while status='new'. Verdicts from
     # the PC move it to evaluated/applied/rejected/archived and drop it off the
-    # /api/pending feed. The Pi is the only writer of this table.
+    # /api/pending feed. The server is the only writer of this table.
     PENDING_COLS = (
         "job_id", "url", "company", "title", "location", "source",
         "posted_at", "salary_min", "salary_max", "currency", "remote",
@@ -174,7 +174,7 @@ class Store:
 
     def pending_jobs(self) -> list[dict]:
         """Jobs still awaiting evaluation (status='new'), newest first. This is
-        the Pi -> PC shortlist payload. No phantom dedup needed — job_id is
+        the server -> PC shortlist payload. No phantom dedup needed — job_id is
         canonical-URL based, so each ad is already a single row."""
         rows = self.con.execute(
             f"""SELECT {", ".join(self.PENDING_COLS)}
@@ -184,7 +184,7 @@ class Store:
         return [dict(zip(self.PENDING_COLS, r)) for r in rows]
 
     def mark_results(self, results: list[dict]) -> int:
-        """Apply PC -> Pi verdicts. Each result is keyed by `url` (preferred,
+        """Apply PC -> server verdicts. Each result is keyed by `url` (preferred,
         since the PC works in URLs) or `job_id`, plus optional score/status/
         report_num. Unknown jobs are skipped. Returns rows updated."""
         updated = 0
@@ -207,7 +207,7 @@ class Store:
             updated += 1
         return updated
 
-    # --- on-Pi LLM triage (analyze.py) ------------------------------------
+    # --- on-server LLM triage (analyze.py) ------------------------------------
     # Triage scores fit from the stored JD. It writes score + eval_reason only —
     # NEVER the `status` column (that's the workflow lane owned by the bridge /
     # career-ops verdicts; pending_jobs() selects status='new', so writing status

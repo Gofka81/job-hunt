@@ -12,7 +12,7 @@ EXAMPLE_RUBRIC = ROOT / "analysis" / "rubric.example.md"
 
 
 def config_path() -> Path:
-    """Where config.yml lives. On the Pi this is a writable path on the data
+    """Where config.yml lives. On the server this is a writable path on the data
     volume (set via JOB_RADAR_CONFIG) so the /api/config route can update it;
     locally it defaults to repo-root config.yml."""
     env = os.environ.get("JOB_RADAR_CONFIG")
@@ -20,7 +20,7 @@ def config_path() -> Path:
 
 
 def load_config(path: str | Path | None = None) -> dict:
-    """Load config. If the chosen path doesn't exist yet (fresh Pi, before the
+    """Load config. If the chosen path doesn't exist yet (fresh server, before the
     first /api/config PUT), fall back to the baked-in example so scans still run
     with sane defaults instead of crashing."""
     p = Path(path) if path else config_path()
@@ -43,7 +43,7 @@ def read_config_text(path: str | Path | None = None) -> str:
 # --- triage rubric (analysis/rubric.md) -----------------------------------
 # The personal candidate profile the LLM triage scores against. Kept in its own
 # markdown file
-# keeps the candidate profile. Lives on the Pi data volume (JOB_RADAR_RUBRIC),
+# keeps the candidate profile. Lives on the server data volume (JOB_RADAR_RUBRIC),
 # gitignored; the baked rubric.example.md is the fallback until one is saved.
 
 def rubric_path() -> Path:
@@ -53,7 +53,7 @@ def rubric_path() -> Path:
 
 def load_rubric(path: str | Path | None = None) -> str:
     """The triage rubric text — the saved one, or the baked example fallback so a
-    fresh Pi still has a (placeholder) rubric instead of crashing."""
+    fresh server still has a (placeholder) rubric instead of crashing."""
     p = Path(path) if path else rubric_path()
     if p.exists():
         return p.read_text()

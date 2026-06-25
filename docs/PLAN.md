@@ -6,16 +6,16 @@
 |----------|--------|
 | Repo | New standalone **public** repo (this one), feeds career-ops via the API contract |
 | Stack | Python + DuckDB + FastAPI + APScheduler |
-| Dashboard | Web app on the Pi (viewable from phone) |
-| Pi ↔ PC sync | HTTP API on the Pi (FastAPI), bearer-token, reachable over cloudflared. *(was git — rejected)* |
-| Pi runtime | **One container**: the server owns the API/dashboard **and** scanning (scheduled + on-demand). Sole DB writer. *(supercronic/systemd — removed)* |
+| Dashboard | Web app on the server (viewable from phone) |
+| server ↔ PC sync | HTTP API on the server (FastAPI), bearer-token, reachable over cloudflared. *(was git — rejected)* |
+| server runtime | **One container**: the server owns the API/dashboard **and** scanning (scheduled + on-demand). Sole DB writer. *(supercronic/systemd — removed)* |
 | Deploy | Portainer GitOps from the public repo; secrets = Portainer stack env vars; cloudflared managed separately |
 | Config | Edited via `GET/POST /api/config`, stored on the data volume — **not in git** (personal) |
 
 ## Architecture
 
 ```
-┌──────── RASPBERRY PI — one container (always-on, zero LLM) ────────┐
+┌────────────── SERVER — one container (always-on, zero LLM) ────────┐
 │  FastAPI server (job-serve)                                        │
 │   sources/  adzuna · reed · greenhouse · lever · ashby · workable  │
 │        ▼  normalize → Job (pydantic) → filter (titles + all-UK)    │
@@ -34,9 +34,9 @@
 └────────────────────────────────────────────────────────────────-─┘
 ```
 
-**Single writer (no two-writer problem):** the Pi's DuckDB is the only system of record. The PC
+**Single writer (no two-writer problem):** the server's DuckDB is the only system of record. The PC
 never writes it directly — it `GET`s the pending shortlist and `POST`s verdicts (`job_id, score,
-status, report_num`), which the Pi applies. The PC still owns its local documents (`reports/`,
+status, report_num`), which the server applies. The PC still owns its local documents (`reports/`,
 `applications.md`, `output/*.pdf`); only the verdict pointer crosses the wire.
 
 ## Providers (priority)
@@ -62,8 +62,8 @@ replicate it in a `sources/{name}.py`.
   `/api/config` `/api/scan`, bearer-token) + PC `job-bridge` (pull→`pipeline.md`, push←`results.tsv`).
   Single-process server owns scheduled (APScheduler) + on-demand scans; config edited via `/api/config`.
   Dockerised for Portainer GitOps. Replaces the rejected git sync; reachable via cloudflared.
-- **Phase 3 — Notify (Pi)** — Telegram notifier on new matches. *(scheduling already done in Phase 2.)*
-- **Phase 4 — Web dashboard (Pi)** — HTML on the same app: funnel
+- **Phase 3 — Notify (server)** — Telegram notifier on new matches. *(scheduling already done in Phase 2.)*
+- **Phase 4 — Web dashboard (server)** — HTML on the same app: funnel
   (found→filtered→shortlisted→evaluated→applied) from `funnel()`, plus a "Scan now" button and a
   `config.yml` editor (POST /api/config). Phone-viewable via cloudflared.
 - **Phase 5 — Enterprise providers** — Workday + Oracle ORC (JPMorgan).
