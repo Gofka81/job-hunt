@@ -189,12 +189,19 @@ DASHBOARD_HTML = r"""<!doctype html>
   table.usage th { color:var(--muted); font-weight:600; }
   .warn { color:var(--danger); font-weight:700; }
 
-  /* ---- pager ---- */
-  .pager { display:flex; align-items:center; justify-content:center; gap:12px;
-           margin:14px 0 4px; }
-  .pager .btn { min-width:82px; }
-  .pager .btn:disabled { opacity:.4; cursor:default; transform:none; }
-  #pgInfo { font-size:13px; min-width:120px; text-align:center; }
+  /* ---- pager (windowed: « first … window … last » ) ---- */
+  .pager { display:flex; align-items:center; justify-content:center; gap:6px;
+           margin:16px 0 4px; flex-wrap:wrap; }
+  .pg { min-width:38px; height:38px; padding:0 10px; border:1px solid var(--line);
+        background:var(--card); color:var(--fg); border-radius:9px; font-size:14px;
+        font-weight:600; cursor:pointer; box-shadow:var(--shadow);
+        display:inline-flex; align-items:center; justify-content:center; }
+  .pg:hover:not(:disabled):not(.on) { border-color:var(--accent); }
+  .pg.on { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); cursor:default; }
+  .pg:disabled { opacity:.35; cursor:default; }
+  .pg.nav { font-size:17px; line-height:1; }
+  .pg.gap { border:0; background:none; box-shadow:none; cursor:default;
+            min-width:16px; color:var(--muted); }
 
   /* ---- tracker kanban ---- */
   /* Break out of the 860px reading column so the board uses the real screen width
@@ -307,11 +314,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 
     <div id="msg"></div>
     <div id="list"></div>
-    <div id="pager" class="pager" style="display:none">
-      <button class="btn" id="pgPrev">← Prev</button>
-      <span id="pgInfo" class="muted"></span>
-      <button class="btn" id="pgNext">Next →</button>
-    </div>
+    <div id="pager" class="pager" style="display:none"></div>
   </div>
 
   <!-- ============ TRACKER ============ -->
@@ -526,18 +529,32 @@ function viewJobs() {
   const range = total > PAGE_SIZE ? ` · ${start + 1}–${start + pageItems.length}` : "";
   $("#ministat").innerHTML = `<b>${total}</b> match${total === 1 ? "" : "es"}${range}${suffix}`;
 }
+// Windowed page tokens: always first + last, a window (±delta) around current,
+// "…" for gaps. e.g. cur=8/20 → [1,"…",7,8,9,"…",20]; small totals show every page.
+function pageTokens(cur, total, delta=1){
+  const out = [1], left = Math.max(2, cur-delta), right = Math.min(total-1, cur+delta);
+  // "…" only for a gap of 2+; a single hidden page is shown as its number (same width).
+  if (left > 2) out.push(left === 3 ? 2 : "…");
+  for (let i=left; i<=right; i++) out.push(i);
+  if (right < total-1) out.push(right === total-2 ? total-1 : "…");
+  if (total > 1) out.push(total);
+  return out;
+}
 function renderPager(total, pages){
   const p = $("#pager");
-  if (total <= PAGE_SIZE) { p.style.display = "none"; return; }
+  if (total <= PAGE_SIZE) { p.style.display = "none"; p.innerHTML = ""; return; }
   p.style.display = "flex";
-  $("#pgPrev").disabled = PAGE <= 1;
-  $("#pgNext").disabled = PAGE >= pages;
-  $("#pgInfo").textContent = `Page ${PAGE} / ${pages}`;
+  const nav = (lbl, to, dis, title) =>
+    `<button class="pg nav" data-page="${to}" ${dis?"disabled":""} title="${title}">${lbl}</button>`;
+  const nums = pageTokens(PAGE, pages).map(t =>
+    t === "…" ? `<span class="pg gap">…</span>`
+              : `<button class="pg${t===PAGE?" on":""}" data-page="${t}" aria-current="${t===PAGE}">${t}</button>`
+  ).join("");
+  p.innerHTML = nav("‹", PAGE-1, PAGE<=1, "Previous") + nums + nav("›", PAGE+1, PAGE>=pages, "Next");
 }
-function gotoPage(delta){
-  PAGE += delta; viewJobs();
-  // jump back to the top of the list so a new page starts at its first card
-  $("#list").scrollIntoView({ behavior: "smooth", block: "start" });
+function setPage(n){
+  PAGE = n; viewJobs();  // viewJobs clamps PAGE to the valid range
+  $("#list").scrollIntoView({ behavior: "smooth", block: "start" });  // start the new page at the top
 }
 function salaryStr(j) {
   const k = n => "£" + Math.round(n/1000) + "k";
@@ -862,8 +879,10 @@ $("#floc").onchange = applyFilters;
 $("#fsource").onchange = applyFilters;
 $("#fsalary").oninput = applyFilters;
 $("#recency").onclick = () => { SHOW_ALL = !SHOW_ALL; applyFilters(); };
-$("#pgPrev").onclick = () => gotoPage(-1);
-$("#pgNext").onclick = () => gotoPage(1);
+$("#pager").onclick = (e) => {
+  const b = e.target.closest("button[data-page]");
+  if (b && !b.disabled) setPage(parseInt(b.dataset.page, 10));
+};
 $("#scan").onclick = async () => {
   try {
     const r = await api("/api/scan", { method:"POST" });
