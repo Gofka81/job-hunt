@@ -24,7 +24,6 @@ from pydantic import BaseModel, Field
 
 from . import bot, notify, setup_logging
 from .analyze import run_analyze
-from .boards import BoardStore, boards_db_path
 from .dashboard import DASHBOARD_HTML
 from .config import ROOT, load_config, load_rubric, read_config_text, save_config, save_rubric
 from .scan import run_scan
@@ -255,14 +254,6 @@ class StatusUpdate(BaseModel):
     status: str
 
 
-class BoardAdd(BaseModel):
-    # Manually seed a discovered ATS board. `slug` is the board id (or host|site
-    # for workday/oracle); `company` is an optional display name.
-    ats: str
-    slug: str
-    company: str | None = None
-
-
 def require_token(authorization: str | None = Header(default=None)) -> None:
     """Bearer-token gate. Fails closed: if no token is configured on the
     server the endpoint refuses rather than serving open to the internet."""
@@ -285,13 +276,6 @@ def create_app(db_path: str | None = None) -> FastAPI:
             yield store
         finally:
             store.close()
-
-    def get_boards():
-        bs = BoardStore(boards_db_path(db))
-        try:
-            yield bs
-        finally:
-            bs.close()
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
@@ -437,44 +421,6 @@ def create_app(db_path: str | None = None) -> FastAPI:
         """LLM token spend — recent runs, grand totals, per-model breakdown. Feeds
         the dashboard Usage view so you can see what's consuming tokens."""
         return store.llm_usage(limit)
-
-    @app.get("/api/boards")
-    def get_boards_list(
-        ats: str | None = None,
-        _: None = Depends(require_token),
-        boards: BoardStore = Depends(get_boards),
-    ) -> dict:
-        """Discovered ATS boards (the durable company directory), newest-first.
-        The ATS connectors scan these UNIONed with the config.yml companies."""
-        return {"boards": boards.list_boards(ats)}
-
-    @app.post("/api/boards")
-    def add_board(
-        body: BoardAdd,
-        _: None = Depends(require_token),
-        boards: BoardStore = Depends(get_boards),
-    ) -> dict:
-        """Manually seed a board. Next scan picks it up (no redeploy). 400 on a bad
-        ATS / empty slug."""
-        try:
-            inserted = boards.upsert_board(
-                body.ats, body.slug, company=body.company, discovered_from="manual"
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
-        return {"saved": True, "inserted": inserted}
-
-    @app.delete("/api/boards")
-    def delete_board(
-        ats: str,
-        slug: str,
-        _: None = Depends(require_token),
-        boards: BoardStore = Depends(get_boards),
-    ) -> dict:
-        """Remove a board (bad/dead slug). 404 if unknown."""
-        if not boards.remove(ats, slug):
-            raise HTTPException(404, "unknown board")
-        return {"deleted": True}
 
     @app.post("/telegram/webhook")
     def telegram_webhook(
