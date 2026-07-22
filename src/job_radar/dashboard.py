@@ -197,23 +197,32 @@ DASHBOARD_HTML = r"""<!doctype html>
   #pgInfo { font-size:13px; min-width:120px; text-align:center; }
 
   /* ---- tracker kanban ---- */
-  .kanban { display:flex; gap:12px; overflow-x:auto; padding-bottom:8px;
+  /* Break out of the 860px reading column so the board uses the real screen width
+     (full-bleed via the centered-100vw trick). Columns then GROW to fill evenly. */
+  #trackerView { width:96vw; max-width:1500px; margin-left:50%; transform:translateX(-50%); }
+  .kanban { display:flex; gap:14px; overflow-x:auto; padding-bottom:10px; align-items:flex-start;
             scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; }
   .kanban::-webkit-scrollbar { height:8px; }
-  .kcol { flex:1 0 300px; min-width:300px; scroll-snap-align:start; background:var(--bg);
-          border:1px solid var(--line); border-radius:12px; padding:10px;
-          display:flex; flex-direction:column; }
-  .kcol-head { display:flex; align-items:center; gap:8px; font-weight:750; font-size:14px;
-               padding:2px 4px 10px; position:sticky; top:0; }
+  .kcol { flex:1 1 300px; min-width:300px; scroll-snap-align:start; background:var(--bg);
+          border:1px solid var(--line); border-radius:14px; padding:12px;
+          display:flex; flex-direction:column; transition:outline-color .12s, background .12s; }
+  .kcol-head { display:flex; align-items:center; gap:8px; font-weight:750; font-size:14.5px;
+               padding:2px 4px 12px; }
   .kcol-head .seg-n { font-size:12px; font-weight:700;
                       background:color-mix(in srgb,var(--muted) 22%,transparent);
                       border-radius:20px; padding:0 8px; min-width:22px; text-align:center; }
   .kcol.saved   .kcol-head { color:var(--accent); }
   .kcol.applied .kcol-head { color:var(--new); }
   .kcol.rejected .kcol-head { color:var(--danger); }
-  .kcol-body { display:flex; flex-direction:column; gap:9px; overflow-y:auto; }
-  .kcol .job { margin-bottom:0; }
-  .kcol-empty { color:var(--muted); font-size:13px; text-align:center; padding:22px 8px; }
+  .kcol-body { display:flex; flex-direction:column; gap:10px; }
+  .kcol .job { margin-bottom:0; cursor:grab; }
+  .kcol .job:active { cursor:grabbing; }
+  .kcol .job.dragging { opacity:.45; }
+  .kcol.drop { outline:2px dashed var(--accent); outline-offset:-3px;
+               background:color-mix(in srgb,var(--accent) 8%,var(--bg)); }
+  .kcol-empty { color:var(--muted); font-size:13px; text-align:center; padding:22px 8px;
+                border:1px dashed var(--line); border-radius:10px; }
+  .drag-hint { color:var(--muted); font-size:12px; margin:2px 2px 10px; }
 
   /* ---- auth ---- */
   #auth { display:none; margin-bottom:14px; gap:8px; }
@@ -311,6 +320,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       <button class="btn" id="trkReload">↻ Reload</button>
       <span id="trkMsg" class="muted"></span>
     </div>
+    <div class="drag-hint">↔ Drag a card between columns to change its stage — or use the buttons on each card.</div>
     <div id="trkBox" class="kanban"></div>
     <div class="hint">
       Your pipeline board — drag stages with the buttons on each card. <b>🔖 Saved</b> =
@@ -675,9 +685,9 @@ function trackerCard(j, moves) {
   const sc = j.score != null ? `<span class="score s-${band}">${Math.round(j.score)}</span> ` : "";
   const btns = moves.map(([st, lbl]) =>
     `<button class="btn ghost" data-trk="${esc(j.job_id)}" data-st="${st}">${lbl}</button>`).join("");
-  return `<div class="job${band ? " sb-"+band : ""}">
+  return `<div class="job${band ? " sb-"+band : ""}" draggable="true" data-card="${esc(j.job_id)}">
     <div class="jobhead">${sc}
-      <a class="joblink" data-jid="${esc(j.job_id)}" href="${esc(j.url)}"
+      <a class="joblink" draggable="false" data-jid="${esc(j.job_id)}" href="${esc(j.url)}"
          target="_blank" rel="noopener">${esc(j.title)}</a></div>
     <div class="meta"><span class="co">${esc(j.company)}</span>
       <span class="pill">${esc(primaryLoc(j))}${locExtra(j)}</span>
@@ -696,7 +706,7 @@ async function loadTracker() {
       const body = items.length
         ? items.map(j => trackerCard(j, s.moves)).join("")
         : `<div class="kcol-empty">Nothing here yet.</div>`;
-      return `<div class="kcol ${s.cls}">
+      return `<div class="kcol ${s.cls}" data-status="${s.key}">
         <div class="kcol-head">${s.label}<span class="seg-n">${items.length}</span></div>
         <div class="kcol-body">${body}</div>
       </div>`;
@@ -708,6 +718,35 @@ $("#trkBox").onclick = (e) => {
   const b = e.target.closest("button[data-trk]");
   if (b) markStatus(b.dataset.trk, b.dataset.st);  // refreshView re-renders the tracker
 };
+
+// Drag a card between columns (desktop/mouse). The move buttons stay as the touch
+// fallback (HTML5 DnD doesn't fire on most mobile browsers). Delegated on #trkBox.
+let DRAG_JID = null;
+const clearDrop = () => document.querySelectorAll(".kcol.drop").forEach(c => c.classList.remove("drop"));
+$("#trkBox").addEventListener("dragstart", (e) => {
+  const card = e.target.closest("[data-card]"); if (!card) return;
+  DRAG_JID = card.dataset.card;
+  e.dataTransfer.effectAllowed = "move";
+  try { e.dataTransfer.setData("text/plain", DRAG_JID); } catch(_){}  // Firefox needs a payload
+  card.classList.add("dragging");
+});
+$("#trkBox").addEventListener("dragend", (e) => {
+  const card = e.target.closest("[data-card]"); if (card) card.classList.remove("dragging");
+  DRAG_JID = null; clearDrop();
+});
+$("#trkBox").addEventListener("dragover", (e) => {
+  const col = e.target.closest(".kcol"); if (!col || !DRAG_JID) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = "move";   // allow the drop
+  if (!col.classList.contains("drop")) { clearDrop(); col.classList.add("drop"); }
+});
+$("#trkBox").addEventListener("drop", (e) => {
+  const col = e.target.closest(".kcol"); if (!col || !DRAG_JID) return;
+  e.preventDefault();
+  const jid = DRAG_JID, target = col.dataset.status;
+  DRAG_JID = null; clearDrop();
+  const j = JOBS.find(x => x.job_id === jid);
+  if (j && j.status !== target) markStatus(jid, target);   // no-op if dropped on its own column
+});
 
 // --- usage view ---
 function fmtTok(n){ n=n||0; return n>=1000 ? (n/1000).toFixed(1)+"k" : ""+n; }
