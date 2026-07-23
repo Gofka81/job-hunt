@@ -244,14 +244,57 @@ DASHBOARD_HTML = r"""<!doctype html>
   .modal-actions { display:flex; flex-direction:column; gap:8px; margin-top:18px; }
   .modal-actions button { width:100%; min-height:47px; font-size:15px; }
 
+  /* ---- settings gear + iOS-style sub-pages ---- */
+  .iconbtn.on { color:var(--accent); border-color:var(--accent); }
+  .set-menu { max-width:560px; }
+  .set-menu > .st-h { display:block; font-size:18px; font-weight:750; margin-bottom:12px; }
+  .set-menu-card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+                   box-shadow:var(--shadow); overflow:hidden; }
+  .set-row { display:flex; align-items:center; gap:12px; width:100%; padding:13px 14px; border:0;
+             border-bottom:1px solid var(--line); background:none; cursor:pointer; text-align:left;
+             color:var(--fg); font-size:15px; }
+  .set-row:last-child { border-bottom:0; }
+  .set-row:hover { background:var(--pill); }
+  .set-row .ico { width:34px; height:34px; border-radius:9px; background:var(--pill); color:var(--pill-fg);
+                  display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; font-size:16px; }
+  .set-row .txt { flex:1; min-width:0; }
+  .set-row .txt b { display:block; font-size:14.5px; font-weight:700; }
+  .set-row .txt span { display:block; font-size:12px; color:var(--muted); }
+  .set-row .chev { color:var(--muted); flex:0 0 auto; font-size:18px; line-height:1; }
+  .set-head { display:flex; align-items:center; gap:6px; margin-bottom:14px; }
+  .set-head .st-title { font-size:18px; font-weight:750; }
+  .set-back { display:inline-flex; align-items:center; gap:3px; background:none; border:0; cursor:pointer;
+              color:var(--accent); font-size:14px; font-weight:600; padding:6px 10px 6px 4px; border-radius:8px; }
+  .set-back:hover { background:var(--pill); }
+  .set-block { background:var(--card); border:1px solid var(--line); border-radius:11px; padding:16px;
+               box-shadow:var(--shadow); margin-bottom:12px; }
+  .set-block h3 { margin:0 0 10px; font-size:14.5px; font-weight:700; }
+  .seg { display:inline-flex; gap:4px; background:var(--bg); border:1px solid var(--line);
+         border-radius:9px; padding:4px; }
+  .seg button { border:0; background:none; color:var(--muted); border-radius:6px; padding:7px 15px;
+                font-size:13px; font-weight:650; cursor:pointer; }
+  .seg button.on { background:var(--accent); color:var(--accent-fg); }
+
+  /* ---- mobile bottom nav (shown ≤600px) ---- */
+  .botnav { display:none; }
+
   @media (max-width:600px) {
     .bar { padding:9px 12px; gap:8px; }
     .brand { font-size:15px; }
-    .wrap { padding:12px 12px 40px; }
+    .wrap { padding:12px 12px 84px; }               /* room for the fixed bottom nav */
     .actions .btn span.lbl { display:none; }   /* icon-only actions on phones */
+    .tabs { display:none; }                    /* primary nav moves to the bottom bar */
     /* kanban: one column at a time with a peek of the next; swipe between them */
     .kcol { flex-basis:84vw; min-width:84vw; }
     .pager .btn { flex:1; }
+    .botnav { display:flex; position:fixed; bottom:0; left:0; right:0; z-index:40;
+              background:var(--card); border-top:1px solid var(--line);
+              padding:5px 8px calc(6px + env(safe-area-inset-bottom)); }
+    .botnav button { flex:1; background:none; border:0; cursor:pointer; color:var(--muted);
+                     font-size:11px; font-weight:650; display:flex; flex-direction:column;
+                     align-items:center; gap:3px; padding:6px 0 4px; }
+    .botnav button.on { color:var(--accent); }
+    .botnav button .ico { font-size:19px; line-height:1; }
   }
 </style>
 </head>
@@ -262,12 +305,8 @@ DASHBOARD_HTML = r"""<!doctype html>
     <nav class="tabs" id="tabs">
       <button class="tab on" data-view="jobs">🧭 Jobs</button>
       <button class="tab" data-view="tracker">📌 Tracker</button>
-      <button class="tab" data-view="config">⚙ Config</button>
-      <button class="tab" data-view="rubric">📋 Rubric</button>
-      <button class="tab" data-view="usage">📊 Usage</button>
     </nav>
-    <button class="iconbtn" id="themeBtn" title="Toggle light / dark">🌓</button>
-    <button class="iconbtn" id="refresh" title="Refresh">↻</button>
+    <button class="iconbtn" id="gearBtn" data-view="settings" title="Settings">⚙</button>
   </div>
 </header>
 
@@ -334,48 +373,102 @@ DASHBOARD_HTML = r"""<!doctype html>
     </div>
   </div>
 
-  <!-- ============ CONFIG ============ -->
-  <div id="configView" style="display:none">
-    <div class="cfgbar">
-      <button class="btn primary" id="cfgSave">Save config</button>
-      <button class="btn" id="cfgReload">↻ Reload</button>
-      <span id="cfgMsg" class="muted"></span>
+  <!-- ============ SETTINGS ============ -->
+  <div id="settingsView" style="display:none">
+    <!-- menu -->
+    <div id="setMenu" class="set-menu">
+      <span class="st-h">Settings</span>
+      <div class="set-menu-card">
+        <button class="set-row" data-set="general"><span class="ico">🎛</span>
+          <span class="txt"><b>General</b><span>Theme &amp; API token</span></span><span class="chev">›</span></button>
+        <button class="set-row" data-set="config"><span class="ico">⚙</span>
+          <span class="txt"><b>Config</b><span>Sources, filters &amp; scan settings</span></span><span class="chev">›</span></button>
+        <button class="set-row" data-set="rubric"><span class="ico">📋</span>
+          <span class="txt"><b>Rubric</b><span>Triage scoring policy</span></span><span class="chev">›</span></button>
+        <button class="set-row" data-set="usage"><span class="ico">📊</span>
+          <span class="txt"><b>Usage</b><span>LLM calls &amp; cost</span></span><span class="chev">›</span></button>
+      </div>
     </div>
-    <textarea id="cfg" spellcheck="false" autocapitalize="off" autocomplete="off"
-              placeholder="Loading config…"></textarea>
-    <div class="hint">Edits save to the server’s config.yml — the next scan picks them up (no redeploy).</div>
-  </div>
 
-  <!-- ============ RUBRIC ============ -->
-  <div id="rubricView" style="display:none">
-    <div class="cfgbar">
-      <button class="btn primary" id="rubSave">Save rubric</button>
-      <button class="btn" id="rubReload">↻ Reload</button>
-      <span id="rubMsg" class="muted"></span>
-    </div>
-    <textarea id="rubric" spellcheck="false" autocapitalize="off" autocomplete="off"
-              placeholder="Loading rubric…"></textarea>
-    <div class="hint">
-      The 0–10 triage scoring policy (candidate profile). Saves to analysis/rubric.md —
-      the next ✨ Analyze run uses it (no redeploy).
-    </div>
-  </div>
+    <!-- sub-page shell -->
+    <div id="setSection" style="display:none">
+      <div class="set-head">
+        <button class="set-back" id="setBack">‹ Settings</button>
+        <span class="st-title" id="setTitle"></span>
+      </div>
 
-  <!-- ============ USAGE ============ -->
-  <div id="usageView" style="display:none">
-    <div class="cfgbar">
-      <button class="btn" id="useReload">↻ Reload</button>
-      <span id="useMsg" class="muted"></span>
-    </div>
-    <div id="useTotals" class="chips"></div>
-    <div id="useBox"></div>
-    <div class="hint">
-      LLM usage (resets on deploy). <b>calls</b> = LLM invocations — for the claude-cli
-      engine that’s your Pro quota (“Pro” = $0 real). <b>api $</b> appears only if the
-      metered API engine was used.
+      <!-- General -->
+      <div id="generalView" style="display:none">
+        <div class="set-block">
+          <h3>Appearance</h3>
+          <div class="seg" id="themeSeg">
+            <button data-theme="">System</button>
+            <button data-theme="light">Light</button>
+            <button data-theme="dark">Dark</button>
+          </div>
+          <div class="hint">System follows your device; Light and Dark override it.</div>
+        </div>
+        <div class="set-block">
+          <h3>API token</h3>
+          <div style="display:flex;gap:8px;align-items:center;max-width:440px">
+            <input id="token2" type="text" autocomplete="off" placeholder="API token"
+                   style="flex:1;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 12px;min-height:38px;font-family:ui-monospace,Menlo,monospace">
+            <button class="btn primary" id="save2">Save</button>
+          </div>
+          <div class="hint" id="tokMsg">Kept in this browser only.</div>
+        </div>
+      </div>
+
+      <!-- Config -->
+      <div id="configView" style="display:none">
+        <div class="cfgbar">
+          <button class="btn primary" id="cfgSave">Save config</button>
+          <button class="btn" id="cfgReload">↻ Reload</button>
+          <span id="cfgMsg" class="muted"></span>
+        </div>
+        <textarea id="cfg" spellcheck="false" autocapitalize="off" autocomplete="off"
+                  placeholder="Loading config…"></textarea>
+        <div class="hint">Edits save to the server’s config.yml — the next scan picks them up (no redeploy).</div>
+      </div>
+
+      <!-- Rubric -->
+      <div id="rubricView" style="display:none">
+        <div class="cfgbar">
+          <button class="btn primary" id="rubSave">Save rubric</button>
+          <button class="btn" id="rubReload">↻ Reload</button>
+          <span id="rubMsg" class="muted"></span>
+        </div>
+        <textarea id="rubric" spellcheck="false" autocapitalize="off" autocomplete="off"
+                  placeholder="Loading rubric…"></textarea>
+        <div class="hint">
+          The 0–10 triage scoring policy (candidate profile). Saves to analysis/rubric.md —
+          the next ✨ Analyze run uses it (no redeploy).
+        </div>
+      </div>
+
+      <!-- Usage -->
+      <div id="usageView" style="display:none">
+        <div class="cfgbar">
+          <button class="btn" id="useReload">↻ Reload</button>
+          <span id="useMsg" class="muted"></span>
+        </div>
+        <div id="useTotals" class="chips"></div>
+        <div id="useBox"></div>
+        <div class="hint">
+          LLM usage (resets on deploy). <b>calls</b> = LLM invocations — for the claude-cli
+          engine that’s your Pro quota (“Pro” = $0 real). <b>api $</b> appears only if the
+          metered API engine was used.
+        </div>
+      </div>
     </div>
   </div>
 </div>
+
+<nav class="botnav" id="botnav">
+  <button data-view="jobs" class="on"><span class="ico">🧭</span>Jobs</button>
+  <button data-view="tracker"><span class="ico">📌</span>Tracker</button>
+  <button data-view="settings"><span class="ico">⚙</span>Settings</button>
+</nav>
 
 <div id="applyModal" class="modal" style="display:none">
   <div class="modal-card">
@@ -396,17 +489,13 @@ let TOKEN = localStorage.getItem("jr_token") || "";
 let JOBS = [];          // last /api/jobs payload (up to 500, all statuses)
 let FUNNEL = {};        // /api/funnel — TRUE per-status totals (not truncated)
 
-// ---- theme (auto, with a persisted manual override) ----
+// ---- theme (System / Light / Dark; persisted; set from the General settings page) ----
 const THEME_KEY = "jr_theme";
 function applyTheme(t){ const r=document.documentElement;
   if (t) r.dataset.theme = t; else r.removeAttribute("data-theme"); }
+function setThemeSeg(t){ document.querySelectorAll("#themeSeg button")
+  .forEach(b => b.classList.toggle("on", (b.dataset.theme||"") === (t||""))); }
 applyTheme(localStorage.getItem(THEME_KEY) || "");
-$("#themeBtn").onclick = () => {
-  const sysDark = matchMedia("(prefers-color-scheme: dark)").matches;
-  const cur = document.documentElement.dataset.theme || (sysDark ? "dark" : "light");
-  const next = cur === "dark" ? "light" : "dark";
-  localStorage.setItem(THEME_KEY, next); applyTheme(next);
-};
 
 function authHeader(){ return { "authorization": "Bearer " + TOKEN }; }
 function ago(ts){
@@ -637,19 +726,37 @@ async function load() {
   } catch(e){ if (e.message!=="auth") $("#msg").textContent = "Error: "+e.message; }
 }
 
-// --- views (jobs / tracker / config / rubric / usage) ---
+// --- views (jobs / tracker / settings) — Settings holds general/config/rubric/usage sub-pages ---
 let VIEW = "jobs";
+let SETTAB = "menu";   // menu | general | config | rubric | usage
 const LOADERS = { jobs: load, tracker: loadTracker, config: loadConfig, rubric: loadRubric, usage: loadUsage };
 function showView(v) {
   VIEW = v;
-  $("#jobsView").style.display    = v==="jobs"    ? "" : "none";
-  $("#trackerView").style.display = v==="tracker" ? "" : "none";
-  $("#configView").style.display  = v==="config"  ? "" : "none";
-  $("#rubricView").style.display  = v==="rubric"  ? "" : "none";
-  $("#usageView").style.display   = v==="usage"   ? "" : "none";
+  $("#jobsView").style.display     = v==="jobs"     ? "" : "none";
+  $("#trackerView").style.display  = v==="tracker"  ? "" : "none";
+  $("#settingsView").style.display = v==="settings" ? "" : "none";
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.view===v));
+  $("#gearBtn").classList.toggle("on", v==="settings");
+  document.querySelectorAll("#botnav button").forEach(b => b.classList.toggle("on", b.dataset.view===v));
+  if (v==="settings") showSetTab(SETTAB);
 }
-function refreshView(){ (LOADERS[VIEW] || load)(); }
+// Settings sub-page router (iOS-style: a menu, then one section with a ‹ Settings back).
+function showSetTab(t) {
+  SETTAB = t;
+  $("#setMenu").style.display    = t==="menu" ? "" : "none";
+  $("#setSection").style.display = t==="menu" ? "none" : "";
+  $("#generalView").style.display = t==="general" ? "" : "none";
+  $("#configView").style.display  = t==="config"  ? "" : "none";
+  $("#rubricView").style.display  = t==="rubric"  ? "" : "none";
+  $("#usageView").style.display   = t==="usage"   ? "" : "none";
+  $("#setTitle").textContent = { general:"General", config:"Config", rubric:"Rubric", usage:"Usage" }[t] || "";
+  if (t==="general") setThemeSeg(localStorage.getItem(THEME_KEY) || "");
+  else if (LOADERS[t]) LOADERS[t]();     // load config/rubric/usage on entry
+}
+function refreshView(){
+  if (VIEW==="settings") { if (SETTAB!=="menu" && SETTAB!=="general" && LOADERS[SETTAB]) LOADERS[SETTAB](); }
+  else (LOADERS[VIEW] || load)();
+}
 
 // --- config editor ---
 async function loadConfig() {
@@ -870,9 +977,21 @@ async function pollAnalyze() {
 }
 
 // --- wiring ---
-document.querySelectorAll(".tab").forEach(b => b.onclick = () => { showView(b.dataset.view); refreshView(); });
-$("#save").onclick = () => { TOKEN = $("#token").value.trim(); localStorage.setItem("jr_token", TOKEN); refreshView(); };
-$("#refresh").onclick = refreshView;
+// Primary nav: top tabs (Jobs/Tracker), the gear, and the mobile bottom bar all carry data-view.
+document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => {
+  const v = b.dataset.view;
+  if (v==="settings") SETTAB = "menu";   // the gear always opens Settings on its menu
+  showView(v); refreshView();
+});
+$("#setMenu").onclick = (e) => { const r = e.target.closest("[data-set]"); if (r) showSetTab(r.dataset.set); };
+$("#setBack").onclick = () => showSetTab("menu");
+document.querySelectorAll("#themeSeg button").forEach(b => b.onclick = () => {
+  const t = b.dataset.theme || ""; localStorage.setItem(THEME_KEY, t); applyTheme(t); setThemeSeg(t);
+});
+$("#save").onclick = () => { TOKEN = $("#token").value.trim(); localStorage.setItem("jr_token", TOKEN);
+  $("#token2").value = TOKEN; refreshView(); };
+$("#save2").onclick = () => { TOKEN = $("#token2").value.trim(); localStorage.setItem("jr_token", TOKEN);
+  $("#token").value = TOKEN; $("#tokMsg").textContent = "Saved — kept in this browser only."; refreshView(); };
 $("#trkReload").onclick = loadTracker;
 $("#cfgSave").onclick = saveConfig;
 $("#cfgReload").onclick = loadConfig;
@@ -969,7 +1088,11 @@ async function markStatus(jid, status) {
   } catch(e){}
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") showApplyModal();
+  if (document.visibilityState !== "visible") return;
+  showApplyModal();
+  // Auto-refresh on return replaces the old ↻ button — but only the live data views,
+  // never while editing a config/rubric textarea in Settings.
+  if (VIEW==="jobs" || VIEW==="tracker") refreshView();
 });
 window.addEventListener("focus", showApplyModal);  // fallback for browsers that skip the above
 $("#amApplied").onclick = () => { const j = pendingApply; closeApplyModal(); if (j) markStatus(j.jid, "applied"); };
@@ -999,6 +1122,7 @@ $("#stopAnalyze").onclick = async () => {
   try { await api("/api/analyze/stop", { method:"POST" }); } catch(e){}
   b.disabled = false; startPoll();      // poll reflects the wind-down + final message
 };
+$("#token2").value = TOKEN;   // reflect the saved token in the General settings field
 renderLanes();
 load();
 </script>
